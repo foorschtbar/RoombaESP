@@ -11,18 +11,19 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPUpdateServer.h>
 #include <EEPROM.h>
-#include <SoftwareSerial.h>
 #include <FS.h>
-#include <myTypes.h> // Include my type definitions (must be in a separate file!)
+#include <config.h> // Include my type definitions (must be in a separate file!)
 
 // Pins
-#define PinWiFiLED D2 // Blue/Wifi LED (LED_BUILTIN=Nodemcu, D2 extern, D4=ESP-Chip-LED)
-#define SERIAL_RX D5  // pin for SoftwareSerial RX
-#define SERIAL_TX D6  // pin for SoftwareSerial TX
-#define BRC_PIN D1
-#define PinPushBtn D3
+#define PIN_LED_WIFI D2 // Blue/Wifi LED (LED_BUILTIN=Nodemcu, D2 extern, D4=ESP-Chip-LED)
+//#define PIN_LED_NODEMCU LED_BUILTIN
+#define PIN_BRC D1
+#define PIN_BUTTON D3
 
-char sensorbytes[10];
+
+#define SENSORBYTES_LENGHT 10
+unsigned long lastSensorStatusTime = 0;
+char sensorbytes[SENSORBYTES_LENGHT];
 #define CHARGE_STATE (int)(sensorbytes[0])
 #define VOLTAGE (int)((sensorbytes[1] << 8) + sensorbytes[2])
 #define CURRENT (signed short int)((sensorbytes[3] << 8) + sensorbytes[4])
@@ -30,20 +31,18 @@ char sensorbytes[10];
 #define CHARGE (int)((sensorbytes[6] << 8) + sensorbytes[7])
 #define CAPACITY (int)((sensorbytes[8] << 8) + sensorbytes[9])
 
-//Softserial
-SoftwareSerial Roomba(SERIAL_RX, SERIAL_TX);
-
 // optional parameters in function prototype
-void HTMLHeader(char *section, int refresh = 0, char *url = "/");
+void HTMLHeader(const char *section, unsigned int refresh = 0, const char *url = "/");
 
 // Firmware Info
-const char *firmware = "1.4";
-const char compile_date[] = __DATE__ " " __TIME__;
+const char FIRMWARE_VERSION[] = "1.5";
+const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // Config
-int cfgStart = 0;             // Start address in EEPROM for structure 'cfg'
+uint8_t cfgStart = 0;         // Start address in EEPROM for structure 'cfg'
 configData_t cfg;             // Instance 'cfg' is a global variable with 'configData_t' structure now
 bool configIsDefault = false; // true if no valid config found in eeprom and defaults settings loaded
+const int CURRENT_CONFIG_VERSION = 2;
 
 //Webserver
 ESP8266WebServer server(80);
@@ -66,7 +65,7 @@ unsigned long previousMillisStatusBlinking = 0; // will store last time LED was 
 unsigned long buttonTimer = 0;                  // will store how long button was pressed
 unsigned long lastClean = 0;                    // will store last Clean
 unsigned long statusLEDinterval = 0;
-bool inp_status = 1;
+bool previousButtonState = 1;                   // will store last Button state. 1 = unpressed, 0 = pressed
 bool bIsConnected = false;
 
 // buffers
@@ -83,7 +82,8 @@ enum class RoombaCMDs
   RMB_MAX,
   RMB_SPOT,
   RMB_DOCK,
-  RMB_POWER
+  RMB_POWER,
+  RMB_RESET
 };
 enum class APICMDs
 {
@@ -93,16 +93,18 @@ enum class APICMDs
   API_DOCK,
   API_DOCK_STATUS
 };
-const long wifiledoffinterval = 300; // interval at which to blink (milliseconds)
+
+const long wifiledoffinterval = 300;        // interval at which to blink (milliseconds)
 const long checkWiFiinterval = 10000;
-const long longPressTime = 10000;
+const long INTERVAL_SENSOR_STATUS = 30000;  // 30s
+const long TIME_BUTTON_LONGPRESS = 10000;   // 10s
 const char *logFileName = "log.txt";
 
 //Wifi
 WiFiEventHandler mConnectHandler;
 WiFiEventHandler mDisConnectHandler;
 
-void logWrite(char *text)
+void logWrite(const char *text)
 {
   /*
   File logFile = SPIFFS.open(logFileName, "a+");
@@ -131,7 +133,7 @@ void saveConfig()
 void eraseConfig()
 {
   EEPROM.begin(512);
-  for (int i = cfgStart; i < sizeof(cfg); i++)
+  for (uint8_t i = cfgStart; i < sizeof(cfg); i++)
   {
     EEPROM.write(i, 0);
   }
@@ -142,25 +144,28 @@ void eraseConfig()
 
 void handleButton()
 {
-  bool inp = digitalRead(PinPushBtn);
+  bool inp = digitalRead(PIN_BUTTON);
   if (inp == 0)
   {
-    if (inp != inp_status)
+    if (inp != previousButtonState)
     {
-      rdebugA("Button pressed %s", "\n");
-      Serial.println("Button pressed short");
-      ESP.reset();
+      rdebugA("Button pressed short\n");
+      //ESP.reset();
       buttonTimer = millis();
     }
-    if ((millis() - buttonTimer >= longPressTime))
+    if ((millis() - buttonTimer >= TIME_BUTTON_LONGPRESS))
     {
-      Serial.println("Button pressed long");
+      rdebugA("Button pressed long\n");
       eraseConfig();
       ESP.reset();
     }
+
+    // Delay a little bit to avoid bouncing
+    delay(50);
   }
-  inp_status = inp;
+  previousButtonState = inp;
 }
+
 
 void rmb_cmd(RoombaCMDs cmd)
 {
@@ -170,141 +175,169 @@ void rmb_cmd(RoombaCMDs cmd)
   {
   case RoombaCMDs::RMB_WAKE:
     logWrite("Send command RMB_WAKE to Roomba");
-    pinMode(BRC_PIN,OUTPUT);
+    digitalWrite(PIN_BRC, HIGH);
     delay(50);
-    digitalWrite(BRC_PIN,LOW);
-    // delay(100);
-    // digitalWrite(BRC_PIN,HIGH);
-    // delay(100);
-    // digitalWrite(BRC_PIN,LOW);
-    // delay(100);
-    // digitalWrite(BRC_PIN,HIGH);
-    // delay(100);
-    // digitalWrite(BRC_PIN,LOW);
-    // delay(100);
-    pinMode(BRC_PIN,INPUT);
-    delay(200);
-    // Roomba.begin(19200, SERIAL_RX, SERIAL_TX);
-    delay(200);
+    digitalWrite(PIN_BRC, LOW);
+    delay(50);
+    digitalWrite(PIN_BRC, HIGH);
+    delay(50);
+    digitalWrite(PIN_BRC, LOW);
+    delay(50);
     break;
+
   case RoombaCMDs::RMB_START:
     logWrite("Send command RMB_START to Roomba");
-    Roomba.write(128); // Start
-    delay(500);
+    Serial.write(128); // Start
+    delay(50);
     break;
+
   case RoombaCMDs::RMB_STOP:
+    rmb_cmd(RoombaCMDs::RMB_WAKE);
     logWrite("Send command RMB_STOP to Roomba");
-    rmb_cmd(RoombaCMDs::RMB_WAKE);
-    rmb_cmd(RoombaCMDs::RMB_START);
-    Roomba.write(173); // Stop
+    Serial.write(173); // Stop
     break;
+
   case RoombaCMDs::RMB_CLEAN:
-    logWrite("Send command RMB_CLEAN to Roomba");
     rmb_cmd(RoombaCMDs::RMB_WAKE);
     rmb_cmd(RoombaCMDs::RMB_START);
-    Roomba.write(135); // Clean
+    logWrite("Send command RMB_CLEAN to Roomba");
+    Serial.write(135); // Clean
     lastClean = millis();
     break;
+
   case RoombaCMDs::RMB_MAX:
+    rmb_cmd(RoombaCMDs::RMB_WAKE);
+    rmb_cmd(RoombaCMDs::RMB_START);
     logWrite("Send command RMB_MAX to Roomba");
-    rmb_cmd(RoombaCMDs::RMB_WAKE);
-    rmb_cmd(RoombaCMDs::RMB_START);
-    Roomba.write(136); // Max
+    Serial.write(136); // Max
     break;
+
   case RoombaCMDs::RMB_SPOT:
+    rmb_cmd(RoombaCMDs::RMB_WAKE);
+    rmb_cmd(RoombaCMDs::RMB_START);
     logWrite("Send command RMB_SPOT to Roomba");
-    rmb_cmd(RoombaCMDs::RMB_WAKE);
-    rmb_cmd(RoombaCMDs::RMB_START);
-    Roomba.write(134); // Spot
+    Serial.write(134); // Spot
     break;
+
   case RoombaCMDs::RMB_DOCK:
+    rmb_cmd(RoombaCMDs::RMB_WAKE);
+    rmb_cmd(RoombaCMDs::RMB_START);
     logWrite("Send command RMB_DOCK to Roomba");
-    rmb_cmd(RoombaCMDs::RMB_WAKE);
-    rmb_cmd(RoombaCMDs::RMB_START);
-    Roomba.write(143); // Seek Dock
+    Serial.write(143); // Seek Dock
     break;
+
   case RoombaCMDs::RMB_POWER:
-    logWrite("Send command RMB_POWER to Roomba");
     rmb_cmd(RoombaCMDs::RMB_WAKE);
     rmb_cmd(RoombaCMDs::RMB_START);
-    Roomba.write(133); // powers down Roomba
-  default:
+    logWrite("Send command RMB_POWER to Roomba");
+    Serial.write(133); // powers down Roomba
+    break;
+
+  case RoombaCMDs::RMB_RESET:
+    rmb_cmd(RoombaCMDs::RMB_WAKE);
+    rmb_cmd(RoombaCMDs::RMB_START);
+    logWrite("Send command RMB_POWER to Roomba");
+    Serial.write(7); // resets down Roomba
     break;
   }
 }
 
-bool getRoombaSensorPackets()
+unsigned int getSensorStatus(bool force = false)
 {
+  ulong lastSensorStatusDiff = (millis()-lastSensorStatusTime);
 
-  Roomba.flush();
+  if(force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS) {
+    rdebugA("Get new sensor values\n");
+    uint8_t i = 0;
+    int8_t availabled = 0;
 
-  rmb_cmd(RoombaCMDs::RMB_WAKE);
-  rmb_cmd(RoombaCMDs::RMB_START);
-  Roomba.write(142);
-  delay(50);
-  Roomba.write(3);
-  delay(500);
+    Serial.flush();
 
-  if (Roomba.available() > 0)
-  {
-    rdebugA("Es gibt etwas zu lesen! %i\n", Roomba.available());
-    char i = 0;
+    rmb_cmd(RoombaCMDs::RMB_WAKE);
+    rmb_cmd(RoombaCMDs::RMB_START);
 
-    while (Roomba.available())
+    Serial.write(142);
+    delay(50);
+    Serial.write(3);
+    delay(50);
+    
+    availabled = Serial.available();
+    rdebugA("Bytes to read: %i\n", availabled);
+
+    if (availabled > 0)
     {
-      int c = Roomba.read();
-      sensorbytes[i++] = c;
+      while (Serial.available())
+      {
+        if (i < SENSORBYTES_LENGHT)
+        {
+          int c = Serial.read();
+          sensorbytes[i++] = c;
+        }
+      }
+
+      if(i == SENSORBYTES_LENGHT) {
+        lastSensorStatusTime = millis();
+        rdebugA("Successful read sensor status\n");
+      } else {
+        rdebugA("Error read sensor status\n");
+      }
+      /*
+      rdebugA("CHARGE_STATE: %i\n", CHARGE_STATE);
+      rdebugA("VOLTAGE: %i\n", VOLTAGE);
+      rdebugA("CURRENT: %i\n", CURRENT);
+      rdebugA("TEMP: %i\n", TEMP);
+      rdebugA("CHARGE: %i\n", CHARGE);
+      rdebugA("CAPACITY: %i\n", CAPACITY);*/
+      return availabled;
     }
-    rdebugA("CHARGE_STATE: %i\n", CHARGE_STATE);
-    rdebugA("VOLTAGE: %i\n", VOLTAGE);
-    rdebugA("CURRENT: %i\n", CURRENT);
-    rdebugA("TEMP: %i\n", TEMP);
-    rdebugA("CHARGE: %i\n", CHARGE);
-    rdebugA("CAPACITY: %i\n", CAPACITY);
-    return true;
+  } else {
+    rdebugA("Use cached sensor values (next refresh in %lus)\n", (INTERVAL_SENSOR_STATUS-lastSensorStatusDiff)/1000);
   }
-  else
-  {
-    rdebugA("Es gibt nichts zu lesen! %s\n", "");
-    return false;
-  }
+
+  return 0;
 }
 
-bool getRoombaSensorPacket(char PacketID, int &result)
+bool getRoombaSensorPacket(int PacketID, int &result)
 {
 
   int low = 0;
   int high = 0;
 
-  Roomba.flush();
+  Serial.flush();
 
   rmb_cmd(RoombaCMDs::RMB_WAKE);
   rmb_cmd(RoombaCMDs::RMB_START);
-  Roomba.write(142);
-  delay(50);
-  Roomba.write(PacketID);
-  delay(50);
 
-  if (Roomba.available() > 0)
+  Serial.write(142);
+  Serial.write(PacketID);
+  delay(100);
+
+  if (Serial.available() > 0)
   {
-    rdebugA("Es gibt etwas zu lesen! %i\n", Roomba.available());
-    if (Roomba.available() == 1)
+    rdebugA("Bytes to read: %i\n", Serial.available());
+    if (Serial.available() == 1)
     {
-      high = Roomba.read();
-      rdebugA("Roomba.read: %i\n", high);
+      high = Serial.read();
+      rdebugA("Serial.read: %i\n", high);
       result = high;
       return true;
     }
-    else if (Roomba.available() == 2)
+    else if (Serial.available() == 2)
     {
-      high = Roomba.read();
-      low = Roomba.read();
-      rdebugA("Roomba.read: %i (%i, %i)\n", (high * 256 + low), high, low);
-      rdebugA("Roomba.read: %i, %i\n", lowByte(high * 256 + low), highByte(high * 256 + low));
-      rdebugA("Roomba.read: %i\n", (signed int)(low + (high << 8)));
-      rdebugA("Roomba.read: %i\n", (unsigned int)(low + (high << 8)));
+      high = Serial.read();
+      low = Serial.read();
+      rdebugA("Serial.read: %i (%i, %i)\n", (high * 256 + low), high, low);
+      rdebugA("Serial.read: %i, %i\n", lowByte(high * 256 + low), highByte(high * 256 + low));
+      rdebugA("Serial.read: %i\n", (signed int)(low + (high << 8)));
+      rdebugA("Serial.read: %i\n", (unsigned int)(low + (high << 8)));
       result = (high * 256 + low);
       return true;
+    } else {
+      while (Serial.available())
+      {
+        rdebugA("%i\n", Serial.read());
+      }
+      
     }
   }
   else
@@ -312,12 +345,14 @@ bool getRoombaSensorPacket(char PacketID, int &result)
     rdebugA("Es gibt nichts zu lesen! %s\n", "");
     return false;
   }
+
+  return false;
 }
 
 void postWSActions()
 {
   // Blink LED
-  digitalWrite(PinWiFiLED, HIGH);
+  digitalWrite(PIN_LED_WIFI, HIGH);
   previousMillis = millis();
   postWSActIsActive = true;
 
@@ -332,8 +367,7 @@ void postWSActions()
 
 bool isRoombaCleaning()
 {
-  /*
-  getRoombaSensorPackets();
+  getSensorStatus();
   if (CHARGE_STATE == 1 || CHARGE_STATE == 2 || CHARGE_STATE == 3 || CHARGE_STATE == 5)
   {
     return false;
@@ -348,7 +382,20 @@ bool isRoombaCleaning()
     {
       return false;
     }
-  }*/
+  }
+}
+
+bool isRoombaCharging()
+{
+  getSensorStatus();
+  if (CHARGE_STATE == 1 || CHARGE_STATE == 2 || CHARGE_STATE == 3 || CHARGE_STATE == 5)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
 }
 
 void loadDefaults()
@@ -359,7 +406,7 @@ void loadDefaults()
   configIsDefault = true;
 
   // Valid-Falg to verify config
-  cfg.configisvalid = 1;
+  cfg.configisvalid = CURRENT_CONFIG_VERSION;
 
   // Note
   TmpStr = "";
@@ -388,12 +435,12 @@ void loadDefaults()
 
 void loadConfig()
 {
-  Serial.println("loadConfig!");
+  //Serial.println("loadConfig!");
   EEPROM.begin(512);
   EEPROM.get(cfgStart, cfg);
   EEPROM.end();
 
-  if (cfg.configisvalid != 1)
+  if (cfg.configisvalid != CURRENT_CONFIG_VERSION)
   {
     loadDefaults();
   }
@@ -415,13 +462,13 @@ long dBm2Quality(long dBm)
 
 void updateSensors(byte packet)
 {
-  // Roomba.print(142);
-  // Roomba.print(packet);
+  // Serial.print(142);
+  // Serial.print(packet);
   // delay(100); // wait for sensors
   // char i = 0;
   //
-  // while(Roomba.available()) {
-  //   int c = Roomba.read();
+  // while(Serial.available()) {
+  //   int c = Serial.read();
   //   if( c==-1 ) {
   //      rdebugA("Sensor Errror! %i\n", c);
   //   }
@@ -437,7 +484,7 @@ void updateSensors(byte packet)
   // }
 }
 
-void HTMLHeader(char *section, int refresh, char *url)
+void HTMLHeader(const char *section, unsigned int refresh, const char *url)
 {
 
   char title[50];
@@ -567,7 +614,7 @@ void HTMLHeader(char *section, int refresh, char *url)
   html += "<li><a href='/logs'>Logs</a></li>\n";
   html += "<li><a href='/wifiscan'>WiFi Scan</a></li>\n";
   html += "<li><a href='/fwupdate'>FW Update</a></li>\n";
-  html += "<li><a href='/reboot'>Reboot</a></li>\n";
+  html += "<li><a href='/reboot'>Reboot </a></li>\n";
   html += "</ul>\n";
   html += "<div id='main'>";
 }
@@ -576,9 +623,9 @@ void HTMLFooter()
 {
   html += "</div>";
   html += "<div id='footer'>&copy; 2018 Fabian Otto - Firmware v";
-  html += firmware;
-  html += " Compiled: ";
-  html += compile_date;
+  html += FIRMWARE_VERSION;
+  html += " - Compiled: ";
+  html += COMPILE_DATE;
   html += "</div>\n";
   html += "</body>\n";
   html += "</html>\n";
@@ -592,27 +639,27 @@ void handleRoot()
 
   html += "<table>\n";
 
-  char uptime[20];
+  char timebuf[20];
   int sec = millis() / 1000;
   int min = sec / 60;
   int hr = min / 60;
   int days = hr / 24;
-  snprintf(uptime, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
+  snprintf(timebuf, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
 
   html += "<tr>\n<td>Uptime</td>\n<td>";
-  html += uptime;
+  html += timebuf;
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Current Time</td>\n<td>";
-  html += timeClient.getFormattedTime();
+  html += timeClient.getFormattedDate();
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Firmware</td>\n<td>v";
-  html += firmware;
+  html += FIRMWARE_VERSION;
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Compiled</td>\n<td>";
-  html += compile_date;
+  html += COMPILE_DATE;
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Cleaning State</td>\n<td>";
@@ -622,18 +669,26 @@ void handleRoot()
   sec = (millis() - lastClean) / 1000;
   if (sec < 0 || lastClean == 0)
   {
-    snprintf(uptime, 20, "---");
+    snprintf(timebuf, 20, "---");
   }
   else
   {
     min = sec / 60;
     hr = min / 60;
     days = hr / 24;
-    snprintf(uptime, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
+    snprintf(timebuf, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
   }
 
   html += "<tr>\n<td>Last clean</td>\n<td>";
-  html += uptime;
+  html += timebuf;
+  html += "</td>\n</tr>\n";
+
+  html += "<tr>\n<td>Dock</td>\n<td>";
+  if(isRoombaCharging()) {
+     html += "YES";
+  } else {
+    html += "NO";
+  }
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Charge State</td>\n<td>";
@@ -1002,7 +1057,7 @@ void handleSettings()
 void handleActions()
 {
   postWSActions();
-  int charge = 0;
+
   if (!server.authenticate(cfg.admin_username, cfg.admin_password))
   {
     return server.requestAuthentication();
@@ -1020,15 +1075,15 @@ void handleActions()
           {
             rmb_cmd(RoombaCMDs::RMB_WAKE);
           }
-          else if (server.arg(i) == "Start")
+          else if (server.arg(i) == "Start (OI)")
           {
             rmb_cmd(RoombaCMDs::RMB_START);
           }
-          else if (server.arg(i) == "Stop")
+          else if (server.arg(i) == "Stop (OI)")
           {
             rmb_cmd(RoombaCMDs::RMB_STOP);
           }
-          else if (server.arg(i) == "Clean")
+          else if (server.arg(i) == "Toggle Clean")
           {
             rmb_cmd(RoombaCMDs::RMB_CLEAN);
           }
@@ -1044,9 +1099,13 @@ void handleActions()
           {
             rmb_cmd(RoombaCMDs::RMB_DOCK);
           }
-          else if (server.arg(i) == "Power")
+          else if (server.arg(i) == "Power off")
           {
             rmb_cmd(RoombaCMDs::RMB_POWER);
+          }
+          else if (server.arg(i) == "Reset Roomba")
+          {
+            rmb_cmd(RoombaCMDs::RMB_RESET);
           }
         }
       }
@@ -1055,13 +1114,16 @@ void handleActions()
     HTMLHeader("Switch Socket");
     html += "<form method='POST' action='/actions'>";
     html += "<input type='submit' name='action' value='Wake'>";
-    html += "<input type='submit' name='action' value='Start'>";
-    html += "<input type='submit' name='action' value='Stop'>";
-    html += "<input type='submit' name='action' value='Clean'>";
+    html += "<input type='submit' name='action' value='Start (OI)'>";
+    html += "<input type='submit' name='action' value='Stop (OI)'>";
+    html += "<br /><br />";
+    html += "<input type='submit' name='action' value='Toggle Clean'>";
     html += "<input type='submit' name='action' value='Max'>";
     html += "<input type='submit' name='action' value='Spot'>";
     html += "<input type='submit' name='action' value='Dock'>";
-    html += "<input type='submit' name='action' value='Power'>";
+    html += "<br /><br />";
+    html += "<input type='submit' name='action' value='Power off'>";
+    html += "<input type='submit' name='action' value='Reset Roomba'>";
     html += "</form>";
 
     HTMLFooter();
@@ -1082,20 +1144,25 @@ void handleStatus()
 
     HTMLHeader("Status");
     html += "<form method='POST' action='/status'><br />";
-    html += "<input type='text' name='packetid' value=''>";
-    html += "<input type='submit' name='single' value='SingleValue'>";
-    html += "<input type='submit' name='packet' value='Packet'>";
+    html += "<input type='text' name='singlesensorid' value=''>";
+    html += "<input type='submit' name='singlesensor' value='Single Sensor'>";
+    html += "<input type='submit' name='sensorgroup' value='Sensor Group 3'>";
 
     if (server.method() == HTTP_POST)
     {
-      html += "<br /><br />Result: ";
+      html += "<br /><br /><b>Result:</b>";
       for (uint8_t i = 0; i < server.args(); i++)
       {
-        if (server.argName(i) == "packet")
+        if (server.argName(i) == "sensorgroup")
         {
-          if (getRoombaSensorPackets())
+          unsigned int sensorPackets = getSensorStatus(true);
+
+          snprintf(buff, sizeof(buff), "<br />Packets: %i<br />", sensorPackets);
+          html += buff;
+
+          if (sensorPackets > 0)
           {
-            snprintf(buff, sizeof(buff), "<br />CHARGE_STATE: %i<br />", CHARGE_STATE);
+            snprintf(buff, sizeof(buff), "CHARGE_STATE: %i<br />", CHARGE_STATE);
             html += buff;
             snprintf(buff, sizeof(buff), "VOLTAGE: %i<br />", VOLTAGE);
             html += buff;
@@ -1110,25 +1177,25 @@ void handleStatus()
           }
           else
           {
-            html += "No Data 1";
+            html += "No data";
           }
         }
-        else if (server.argName(i) == "packetid")
+        else if (server.argName(i) == "singlesensorid")
         {
           String packetID;
           packetID = server.arg(i);
           packetID.trim();
           if (packetID != "")
           {
-            rdebugA("PackedID: %s (%i)\n", packetID.c_str(), packetID.toInt());
+            rdebugA("PackedID: %s (%i)\n", packetID.c_str(), (int)packetID.toInt());
             int result;
-            if (getRoombaSensorPacket(char(packetID.toInt()), result))
+            if (getRoombaSensorPacket(packetID.toInt(), result))
             {
               html += result;
             }
             else
             {
-              html += "No Data";
+              html += "No data";
             }
           }
         }
@@ -1278,11 +1345,11 @@ void handleFWUpdate()
     html += "<table>\n";
     html += "<tr>\n";
     html += "<td>Current Version</td>\n";
-    html += String("<td>") + firmware + String("</td>\n");
+    html += String("<td>") + FIRMWARE_VERSION + String("</td>\n");
     html += "</tr>\n";
     html += "<tr>\n";
     html += "<td>Compiled</td>\n";
-    html += String("<td>") + compile_date + String("</td>\n");
+    html += String("<td>") + COMPILE_DATE + String("</td>\n");
     html += "</tr>\n";
     html += "<tr>\n";
     html += "<td>Upload</td>\n";
@@ -1356,6 +1423,16 @@ void handleAPI(APICMDs cmd)
       logWrite("API: RMB_DOCK");
       out = "1";
       break;
+     case APICMDs::API_DOCK_STATUS:
+      if (isRoombaCharging())
+      {
+        out = "1";
+      }
+      else
+      {
+        out = "0";
+      }
+      break;
     default:
       break;
     }
@@ -1382,17 +1459,24 @@ void setup(void)
 {
 
   // Setting the I/O pin modes
-  pinMode(PinPushBtn, INPUT);
-  pinMode(PinWiFiLED, OUTPUT);
-  pinMode(SERIAL_RX, INPUT);
-  pinMode(SERIAL_TX, OUTPUT);
-  pinMode(BRC_PIN, INPUT); // High-impedence on the BRC_PIN
+  pinMode(PIN_BUTTON, INPUT);
+  pinMode(PIN_LED_WIFI, OUTPUT);
+  //pinMode(PIN_LED_NODEMCU, OUTPUT);
+  pinMode(PIN_BRC, OUTPUT);
 
-  // Status LED on
-  digitalWrite(PinWiFiLED, HIGH);
+  
+  // WiFi Status LED on
+  digitalWrite(PIN_LED_WIFI, HIGH);
 
+  // NodeMCU LED on
+  //digitalWrite(PIN_LED_WIFI, LOW);
+
+  // Baudrate Change/Wake-Pin Low
+  digitalWrite(PIN_BRC, LOW);
+
+  // Serial
   Serial.begin(115200);
-  Roomba.begin(115200);
+  Serial.swap();
 
   // SPIFFS
   SPIFFS.begin();
@@ -1412,14 +1496,14 @@ void setup(void)
   if (configIsDefault)
   {
     // Start AP
-    Serial.println("configIsDefault: AP Mode");
+    //Serial.println("configIsDefault: AP Mode");
     WiFi.softAP("Roomba", "");
-    digitalWrite(PinWiFiLED, HIGH);
+    digitalWrite(PIN_LED_WIFI, HIGH);
   }
   else
   {
     // Connecting to a WiFi network
-    Serial.println("configIsNotDefault: Connecting to WiFi");
+    //Serial.println("configIsNotDefault: Connecting to WiFi");
     WiFi.mode(WIFI_STA);
     if (strcmp(cfg.hostname, "") != 0)
     {
@@ -1430,7 +1514,7 @@ void setup(void)
     while (WiFi.status() != WL_CONNECTED)
     {
       delay(250);
-      Serial.print(".");
+      //Serial.print(".");
 
       // Blink WiFi LED
       if (wifiledState == HIGH)
@@ -1441,26 +1525,26 @@ void setup(void)
       {
         wifiledState = HIGH;
       }
-      digitalWrite(PinWiFiLED, wifiledState);
+      digitalWrite(PIN_LED_WIFI, wifiledState);
 
       // handleButton
       handleButton();
     }
 
-    Serial.println();
-    Serial.print("WiFi connected with ip ");
-    Serial.println(WiFi.localIP());
-    digitalWrite(PinWiFiLED, LOW);
+    //Serial.println();
+    //Serial.print("WiFi connected with ip ");
+    //Serial.println(WiFi.localIP());
+    digitalWrite(PIN_LED_WIFI, LOW);
 
-    WiFi.printDiag(Serial);
+    //WiFi.printDiag(Serial);
   }
 
   // Telnet debug
   if (cfg.telnet)
   {
-    Debug.begin(WiFi.hostname());   // Initiaze the telnet server
-    Debug.setSerialEnabled(true);   // All messages too send to serial too, and can be see in serial monitor
-    Debug.setResetCmdEnabled(true); // Enable the reset command
+    Debug.begin(WiFi.hostname()); // Initiaze the telnet server
+    //Debug.setSerialEnabled(true);   // All messages too send to serial too, and can be see in serial monitor
+    //Debug.setResetCmdEnabled(true); // Enable the reset command
   }
 
   // NTPClient
@@ -1530,7 +1614,7 @@ void loop(void)
   {
     if (currentMillis - previousMillis >= wifiledoffinterval)
     {
-      digitalWrite(PinWiFiLED, LOW);
+      digitalWrite(PIN_LED_WIFI, LOW);
       postWSActIsActive = false;
     }
 
@@ -1551,7 +1635,7 @@ void loop(void)
         wifiledState = HIGH; // Note that this switches the LED *on*
         statusLEDinterval = 100;
       }
-      digitalWrite(PinWiFiLED, wifiledState);
+      digitalWrite(PIN_LED_WIFI, wifiledState);
 
       // fast flashing if no wifi connection
       if (WiFi.status() != WL_CONNECTED)
@@ -1573,26 +1657,22 @@ void loop(void)
     if (wifiledState == LOW) { // is on then
       rdebugA("off %s", "\n");
       statusLEDinterval = 500;
-      digitalWrite(PinWiFiLED, LOW);
+      digitalWrite(PIN_LED_WIFI, LOW);
       wifiledState = HIGH;
     } else {
       rdebugA("on %s", "\n");
       statusLEDinterval = defaultStatusLEDinterval;
-      digitalWrite(PinWiFiLED, LOW);
+      digitalWrite(PIN_LED_WIFI, LOW);
       wifiledState = LOW;
     }
     }
   */
+
   // Button
   handleButton();
 
   // Webserver & Debug
   server.handleClient();
-
-  // Serial to debug
-  //  if (Roomba.available() > 0) {
-  //      rdebugA("%s", Roomba.read());
-  //  }
 
   // Remote Debug
   if (cfg.telnet)

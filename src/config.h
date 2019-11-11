@@ -1,18 +1,18 @@
-#ifndef myTypes_h
-#define myTypes_h
+#ifndef config_h
+#define config_h
 
 #include <WString.h>
 
 
 // 'byte' und 'word' doesn't work!
 typedef struct {
-  int configisvalid;
+  uint8_t configisvalid;
   char api_username[30];
   char api_password[30];
   char admin_username[30];
   char admin_password[30];
   char note[30];
-  int telnet;
+  uint8_t telnet;
   char wifi_ssid[30];
   char wifi_psk[30];
   char hostname[30];
