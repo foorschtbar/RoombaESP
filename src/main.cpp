@@ -20,7 +20,6 @@
 #define PIN_BRC D1
 #define PIN_BUTTON D3
 
-
 #define SENSORBYTES_LENGHT 10
 unsigned long lastSensorStatusTime = 0;
 char sensorbytes[SENSORBYTES_LENGHT];
@@ -65,7 +64,7 @@ unsigned long previousMillisStatusBlinking = 0; // will store last time LED was 
 unsigned long buttonTimer = 0;                  // will store how long button was pressed
 unsigned long lastClean = 0;                    // will store last Clean
 unsigned long statusLEDinterval = 0;
-bool previousButtonState = 1;                   // will store last Button state. 1 = unpressed, 0 = pressed
+bool previousButtonState = 1; // will store last Button state. 1 = unpressed, 0 = pressed
 bool bIsConnected = false;
 
 // buffers
@@ -94,15 +93,23 @@ enum class APICMDs
   API_DOCK_STATUS
 };
 
-const long wifiledoffinterval = 300;        // interval at which to blink (milliseconds)
+const long wifiledoffinterval = 300; // interval at which to blink (milliseconds)
 const long checkWiFiinterval = 10000;
-const long INTERVAL_SENSOR_STATUS = 30000;  // 30s
-const long TIME_BUTTON_LONGPRESS = 10000;   // 10s
+const long INTERVAL_SENSOR_STATUS = 30000; // 30s
+const long TIME_BUTTON_LONGPRESS = 10000;  // 10s
 const char *logFileName = "log.txt";
 
 //Wifi
 WiFiEventHandler mConnectHandler;
 WiFiEventHandler mDisConnectHandler;
+
+void clearSerialBuffer()
+{
+  while (Serial.available())
+  {
+    Serial.read();
+  }
+}
 
 void logWrite(const char *text)
 {
@@ -165,7 +172,6 @@ void handleButton()
   }
   previousButtonState = inp;
 }
-
 
 void rmb_cmd(RoombaCMDs cmd)
 {
@@ -244,54 +250,64 @@ void rmb_cmd(RoombaCMDs cmd)
 
 unsigned int getSensorStatus(bool force = false)
 {
-  ulong lastSensorStatusDiff = (millis()-lastSensorStatusTime);
+  ulong lastSensorStatusDiff = (millis() - lastSensorStatusTime);
 
-  if(force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS) {
+  if (force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS)
+  {
     rdebugA("Get new sensor values\n");
     uint8_t i = 0;
     int8_t availabled = 0;
 
-    Serial.flush();
+    clearSerialBuffer();
+
+    yield();
 
     rmb_cmd(RoombaCMDs::RMB_WAKE);
     rmb_cmd(RoombaCMDs::RMB_START);
 
     Serial.write(142);
-    delay(50);
     Serial.write(3);
     delay(50);
-    
+
     availabled = Serial.available();
     rdebugA("Bytes to read: %i\n", availabled);
 
-    if (availabled > 0)
+    yield();
+
+    if (availabled == SENSORBYTES_LENGHT)
     {
       while (Serial.available())
       {
+        int c = Serial.read();
+
         if (i < SENSORBYTES_LENGHT)
         {
-          int c = Serial.read();
           sensorbytes[i++] = c;
         }
       }
 
-      if(i == SENSORBYTES_LENGHT) {
-        lastSensorStatusTime = millis();
-        rdebugA("Successful read sensor status\n");
-      } else {
-        rdebugA("Error read sensor status\n");
-      }
-      /*
-      rdebugA("CHARGE_STATE: %i\n", CHARGE_STATE);
-      rdebugA("VOLTAGE: %i\n", VOLTAGE);
-      rdebugA("CURRENT: %i\n", CURRENT);
-      rdebugA("TEMP: %i\n", TEMP);
-      rdebugA("CHARGE: %i\n", CHARGE);
-      rdebugA("CAPACITY: %i\n", CAPACITY);*/
-      return availabled;
+      lastSensorStatusTime = millis();
+      rdebugA("Successful read sensor status\n");
+
+    } else {
+      clearSerialBuffer();
+      rdebugA("Error read sensor status. To less or many bytes. Exspecting %d\n", SENSORBYTES_LENGHT);
     }
-  } else {
-    rdebugA("Use cached sensor values (next refresh in %lus)\n", (INTERVAL_SENSOR_STATUS-lastSensorStatusDiff)/1000);
+
+    yield();
+
+    /*
+    rdebugA("CHARGE_STATE: %i\n", CHARGE_STATE);
+    rdebugA("VOLTAGE: %i\n", VOLTAGE);
+    rdebugA("CURRENT: %i\n", CURRENT);
+    rdebugA("TEMP: %i\n", TEMP);
+    rdebugA("CHARGE: %i\n", CHARGE);
+    rdebugA("CAPACITY: %i\n", CAPACITY);*/
+    return availabled;
+  }
+  else
+  {
+    rdebugA("Use cached sensor values (next refresh in %lus)\n", (INTERVAL_SENSOR_STATUS - lastSensorStatusDiff) / 1000);
   }
 
   return 0;
@@ -303,14 +319,18 @@ bool getRoombaSensorPacket(int PacketID, int &result)
   int low = 0;
   int high = 0;
 
-  Serial.flush();
+  clearSerialBuffer();
+
+  yield();
 
   rmb_cmd(RoombaCMDs::RMB_WAKE);
   rmb_cmd(RoombaCMDs::RMB_START);
 
   Serial.write(142);
   Serial.write(PacketID);
-  delay(100);
+  delay(50);
+
+  yield();
 
   if (Serial.available() > 0)
   {
@@ -332,12 +352,13 @@ bool getRoombaSensorPacket(int PacketID, int &result)
       rdebugA("Serial.read: %i\n", (unsigned int)(low + (high << 8)));
       result = (high * 256 + low);
       return true;
-    } else {
+    }
+    else
+    {
       while (Serial.available())
       {
         rdebugA("%i\n", Serial.read());
       }
-      
     }
   }
   else
@@ -684,9 +705,12 @@ void handleRoot()
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Dock</td>\n<td>";
-  if(isRoombaCharging()) {
-     html += "YES";
-  } else {
+  if (isRoombaCharging())
+  {
+    html += "YES";
+  }
+  else
+  {
     html += "NO";
   }
   html += "</td>\n</tr>\n";
@@ -1423,7 +1447,7 @@ void handleAPI(APICMDs cmd)
       logWrite("API: RMB_DOCK");
       out = "1";
       break;
-     case APICMDs::API_DOCK_STATUS:
+    case APICMDs::API_DOCK_STATUS:
       if (isRoombaCharging())
       {
         out = "1";
@@ -1464,7 +1488,6 @@ void setup(void)
   //pinMode(PIN_LED_NODEMCU, OUTPUT);
   pinMode(PIN_BRC, OUTPUT);
 
-  
   // WiFi Status LED on
   digitalWrite(PIN_LED_WIFI, HIGH);
 
