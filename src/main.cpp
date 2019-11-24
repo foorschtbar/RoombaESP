@@ -34,7 +34,7 @@ char sensorbytes[SENSORBYTES_LENGHT];
 void HTMLHeader(const char *section, unsigned int refresh = 0, const char *url = "/");
 
 // Firmware Info
-const char FIRMWARE_VERSION[] = "1.5";
+const char FIRMWARE_VERSION[] = "1.6";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // Config
@@ -252,7 +252,7 @@ unsigned int getSensorStatus(bool force = false)
 {
   ulong lastSensorStatusDiff = (millis() - lastSensorStatusTime);
 
-  if (force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS)
+  if (force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS || lastSensorStatusTime == 0)
   {
     rdebugA("Get new sensor values\n");
     uint8_t i = 0;
@@ -288,8 +288,9 @@ unsigned int getSensorStatus(bool force = false)
 
       lastSensorStatusTime = millis();
       rdebugA("Successful read sensor status\n");
-
-    } else {
+    }
+    else
+    {
       clearSerialBuffer();
       rdebugA("Error read sensor status. To less or many bytes. Exspecting %d\n", SENSORBYTES_LENGHT);
     }
@@ -337,9 +338,18 @@ bool getRoombaSensorPacket(int PacketID, int &result)
     rdebugA("Bytes to read: %i\n", Serial.available());
     if (Serial.available() == 1)
     {
-      high = Serial.read();
-      rdebugA("Serial.read: %i\n", high);
-      result = high;
+      sint8_t value = Serial.read();
+      rdebugA("Serial.read: %i\n", value);
+      rdebugA("Serial.read: %i\n", (signed int)value);
+      rdebugA("Serial.read: %i\n", (unsigned int)value);
+      rdebugA("Serial.read: %x\n", value);
+      rdebugA("Serial.read: %i\n", value);
+      rdebugA("Serial.read: %u\n", value);
+      rdebugA("Serial.read: %i\n", (signed int)value);
+      rdebugA("Serial.read: %u\n", (unsigned int)value);
+      rdebugA("Serial.read: %u\n", (signed int)value);
+      rdebugA("Serial.read: %u\n", (unsigned int)value);
+      result = value;
       return true;
     }
     else if (Serial.available() == 2)
@@ -1443,9 +1453,16 @@ void handleAPI(APICMDs cmd)
       logWrite("API: APICMDs::API_STATUS");
       break;
     case APICMDs::API_DOCK:
-      rmb_cmd(RoombaCMDs::RMB_DOCK);
+      if (isRoombaCharging())
+      {
+        out = "1";
+      }
+      else
+      {
+        rmb_cmd(RoombaCMDs::RMB_DOCK);
+        out = "0";
+      }
       logWrite("API: RMB_DOCK");
-      out = "1";
       break;
     case APICMDs::API_DOCK_STATUS:
       if (isRoombaCharging())
@@ -1456,6 +1473,7 @@ void handleAPI(APICMDs cmd)
       {
         out = "0";
       }
+      logWrite("API: APICMDs::API_DOCK_STATUS");
       break;
     default:
       break;
@@ -1589,8 +1607,11 @@ void setup(void)
   server.on("/api/status", []() {
     handleAPI(APICMDs::API_STATUS);
   });
-  server.on("/api/dock", []() {
+  server.on("/api/dockstatus", []() {
     handleAPI(APICMDs::API_DOCK_STATUS);
+  });
+  server.on("/api/dock", []() {
+    handleAPI(APICMDs::API_DOCK);
   });
   server.on("/settings", []() {
     handleSettings();
