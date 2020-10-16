@@ -481,7 +481,7 @@ void loadConfig()
   }
 }
 
-long dBm2Quality(long dBm)
+long RSSI2Quality(long dBm)
 {
   if (dBm <= -100)
     return 0;
@@ -812,7 +812,7 @@ void handleRoot()
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Signal strength</td>\n<td>";
-  html += dBm2Quality(WiFi.RSSI());
+  html += RSSI2Quality(WiFi.RSSI());
   html += "% (";
   html += WiFi.RSSI();
   html += "dBm)</td>\n</tr>\n";
@@ -1293,7 +1293,7 @@ void handleWiFiScan()
         html += "</td>\n<td>";
         html += WiFi.channel(i);
         html += "</td>\n<td>";
-        html += dBm2Quality(WiFi.RSSI(i));
+        html += RSSI2Quality(WiFi.RSSI(i));
         html += "%</td>\n<td>";
         html += WiFi.RSSI(i);
         html += "dBm</td>\n<td>";
