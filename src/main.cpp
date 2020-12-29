@@ -1,7 +1,3 @@
-/* BOARD SETTINGS
-  Board : NodeMCU 1.0
-*/
-
 // Remote debug over telnet - not recommended for production, only for development
 #include <RemoteDebug.h> //https://github.com/JoaoLopesF/RemoteDebug
 #include <NTPClient.h>
@@ -14,6 +10,8 @@
 #include <ESP8266HTTPUpdateServer.h>
 #include <EEPROM.h>
 #include <FS.h>
+#include <U8g2lib.h>
+#include <Wire.h>
 #include <settings.h> // Include my type definitions (must be in a separate file!)
 
 // ++++++++++++++++++++++++++++++++++++++++
@@ -99,6 +97,7 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
 WiFiClient espClient;
 PubSubClient client(espClient);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/D6, /* data=*/D5); // pin remapping with ESP8266 HW I2C
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -145,6 +144,41 @@ WiFiEventHandler mDisConnectHandler;
 // MAIN CODE
 //
 // ++++++++++++++++++++++++++++++++++++++++
+
+void displaySetup()
+{
+  u8g2.begin();
+
+  //u8g2.setFont(u8g2_font_6x10_tf); // set the target font to calculate the pixel width
+  //width = u8g2.getUTF8Width(text); // calculate the pixel width of the text
+  //
+  //u8g2.setFont(u8g2_font_unifont_t_symbols); // set the target font
+  //width2 = u8g2.getUTF8Width(text2);         // calculate the pixel width of the text
+  //
+  u8g2.setFontMode(0); // enable transparent mode, which is faster
+  //
+  u8g2.setFontPosTop();
+  u8g2.setFontDirection(0);
+  //
+  u8g2.setContrast(255);
+}
+
+void displayMsg(const char *text, const char *text2 = "", const char *text3 = "", const char *text4 = "", const char *text5 = "")
+{
+  u8g2.clearBuffer();                 // clear the internal memory
+  u8g2.setFont(u8g2_font_helvB08_tf); // choose a suitable font
+  snprintf(buff, sizeof(buff), ".: RoombaESP v%s :.", FIRMWARE_VERSION);
+  u8g2_uint_t width = u8g2.getUTF8Width(buff);
+  u8g2_uint_t offset = (u8g2.getDisplayWidth() - width) / 2;
+  u8g2.drawStr(offset, 2, buff);      // write something to the internal memory
+  u8g2.setFont(u8g2_font_helvR08_tf); // choose a suitable font
+  u8g2.drawStr(0, 15, text);          // write something to the internal memory
+  u8g2.drawStr(0, 25, text2);         // write something to the internal memory
+  u8g2.drawStr(0, 35, text3);         // write something to the internal memory
+  u8g2.drawStr(0, 45, text4);         // write something to the internal memory
+  u8g2.drawStr(0, 55, text5);         // write something to the internal memory
+  u8g2.sendBuffer();                  // transfer internal memory to the display
+}
 
 void clearSerialBuffer()
 {
@@ -1693,6 +1727,10 @@ void setup(void)
   Serial.begin(115200);
   Serial.swap();
 
+  // Display
+  displaySetup();
+  displayMsg("Booting. Please wait...");
+
   // SPIFFS
   SPIFFS.begin();
   logWrite("- - - S T A R T - - -");
@@ -1712,8 +1750,16 @@ void setup(void)
   {
     // Start AP
     //Serial.println("configIsDefault: AP Mode");
-    WiFi.softAP("Roomba", "");
+    WiFi.softAP("RoombaESP", "");
     digitalWrite(PIN_LED_WIFI, HIGH);
+    displayMsg("WiFi: AP Mode");
+    delay(500);
+    char buff1[255];
+    char buff2[255];
+    snprintf(buff1, sizeof(buff1), "SSID: %s", WiFi.softAPSSID().c_str());
+    snprintf(buff2, sizeof(buff2), "IP: %s", WiFi.softAPIP().toString().c_str());
+
+    displayMsg("No valid config found.", "Started WiFi AP.", buff1, "PSK: none", buff2);
   }
   else
   {
@@ -1735,10 +1781,12 @@ void setup(void)
       if (wifiledState == HIGH)
       {
         wifiledState = LOW;
+        displayMsg("WiFi connecting");
       }
       else
       {
         wifiledState = HIGH;
+        displayMsg("WiFi connecting...");
       }
       digitalWrite(PIN_LED_WIFI, wifiledState);
 
