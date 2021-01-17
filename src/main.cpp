@@ -12,6 +12,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <settings.h> // Include my type definitions (must be in a separate file!)
+#include "screens.h"
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -59,7 +60,8 @@ const int TIME_BUTTON_LONGPRESS = 10000;
 const long INTERVAL_SENSOR_STATUS = 1000;
 const int STATE_PUBLISH_INTERVAL = 5000;
 const int MQTT_RECONNECT_INTERVAL = 2000;
-const int DISPLAY_UPDATE_INTERVAL = 1000;
+const int DISPLAY_UPDATE_INTERVAL = 200;
+const int DISPLAY_TIMEOUT = 4000; // time after display will go offs
 
 // Constants - MQTT
 const char MQTT_SUBSCRIBE_CMD_TOPIC1[] = "%scmd";                // Subscribe patter without hostname
@@ -69,8 +71,7 @@ const char MQTT_LWT_MESSAGE[] = "{\"device\":\"disconnected\"}"; // LWT message
 const char MQTT_DEFAULT_PREFIX[] = "roombaesp";                  // Default MQTT topic prefix
 
 // Constants - Screen (OLED)
-const int SCREEN_COUNT = 2;
-const int SCREEN_OFF = 0;
+const int SCREEN_COUNT = 3; // number of screens
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -114,6 +115,7 @@ NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
 WiFiClient espClient;
 PubSubClient client(espClient);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/D6, /* data=*/D5); // pin remapping with ESP8266 HW I2C
+Screens screen(u8g2, SCREEN_COUNT, DISPLAY_UPDATE_INTERVAL, DISPLAY_TIMEOUT);
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -139,6 +141,7 @@ bool previousButtonState = 1;               // will store last Button state. 1 =
 bool bIsConnected = false;
 bool bMQTTsending = false;
 int currentScreen = 0;
+bool displayPowerSaving = true;
 
 // buffers
 String html;
@@ -163,41 +166,6 @@ WiFiEventHandler mDisConnectHandler;
 // MAIN CODE
 //
 // ++++++++++++++++++++++++++++++++++++++++
-
-void displaySetup()
-{
-  u8g2.begin();
-
-  //u8g2.setFont(u8g2_font_6x10_tf); // set the target font to calculate the pixel width
-  //width = u8g2.getUTF8Width(text); // calculate the pixel width of the text
-  //
-  //u8g2.setFont(u8g2_font_unifont_t_symbols); // set the target font
-  //width2 = u8g2.getUTF8Width(text2);         // calculate the pixel width of the text
-  //
-  u8g2.setFontMode(0); // enable transparent mode, which is faster
-  //
-  u8g2.setFontPosTop();
-  u8g2.setFontDirection(0);
-  //
-  u8g2.setContrast(255);
-}
-
-void displayMsg(const char *text, const char *text2 = "", const char *text3 = "", const char *text4 = "", const char *text5 = "")
-{
-  u8g2.clearBuffer();                 // clear the internal memory
-  u8g2.setFont(u8g2_font_helvB08_tf); // choose a suitable font
-  snprintf(buff, sizeof(buff), ".: RoombaESP v%s :.", FIRMWARE_VERSION);
-  u8g2_uint_t width = u8g2.getUTF8Width(buff);
-  u8g2_uint_t offset = (u8g2.getDisplayWidth() - width) / 2;
-  u8g2.drawStr(offset, 2, buff);      // write something to the internal memory
-  u8g2.setFont(u8g2_font_helvR08_tf); // choose a suitable font
-  u8g2.drawStr(0, 15, text);          // write something to the internal memory
-  u8g2.drawStr(0, 25, text2);         // write something to the internal memory
-  u8g2.drawStr(0, 35, text3);         // write something to the internal memory
-  u8g2.drawStr(0, 45, text4);         // write something to the internal memory
-  u8g2.drawStr(0, 55, text5);         // write something to the internal memory
-  u8g2.sendBuffer();                  // transfer internal memory to the display
-}
 
 void clearSerialBuffer()
 {
@@ -238,8 +206,7 @@ void handleButton()
       rdebugA("Button pressed short\n");
       //ESP.reset();
       lastButtonTimer = millis();
-      displayMsg("Button pressed!", "", "", timeClient.getFormattedDate().c_str());
-      lastDisplayUpdate = millis() + 500;
+      screen.nextScreen();
     }
     if ((millis() - lastButtonTimer >= TIME_BUTTON_LONGPRESS))
     {
@@ -1656,19 +1623,41 @@ boolean MQTTreconnect()
 
 void handleDisplay()
 {
-  //showWEBMQTTAction
+  if (screen.needRefresh())
+  {
 
-  char buff1[255];
-  char buff2[255];
-  char buff3[255];
-  char buff4[255];
+    char buff1[255];
+    char buff2[255];
+    char buff3[255];
+    char buff4[255];
 
-  snprintf(buff1, sizeof(buff1), "%s", timeClient.getFormattedDate().c_str());
-  snprintf(buff2, sizeof(buff2), "Wifi %s (%s)", (WiFi.isConnected() ? "ok" : "not connected"), (WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "---"));
-  snprintf(buff3, sizeof(buff3), "MQTT %s", (client.connected() ? "connected" : "not connected"));
-  snprintf(buff4, sizeof(buff4), "%s", chargeStateString().c_str());
-
-  displayMsg(buff1, buff2, buff3, buff4);
+    switch (screen.currentScreen())
+    {
+    case 1:
+      //showWEBMQTTAction
+      snprintf(buff1, sizeof(buff1), "%s", timeClient.getFormattedDate().c_str());
+      snprintf(buff2, sizeof(buff2), "Wifi %s", (WiFi.isConnected() ? "connected" : "not connected"));
+      snprintf(buff3, sizeof(buff3), "IP: %s", (WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "---"));
+      snprintf(buff4, sizeof(buff4), "MQTT %s", (client.connected() ? "connected" : "not connected"));
+      screen.displayMsg(buff1, buff2, buff3, buff4);
+      break;
+    case 2:
+      snprintf(buff1, sizeof(buff1), "State: %s", (sensorbytesvalid ? chargeStateString().c_str() : "---"));
+      snprintf(buff, sizeof(buff), "%.2f V", ((float)VOLTAGE / 1000));
+      snprintf(buff2, sizeof(buff2), "Voltage: %s", (sensorbytesvalid ? buff : "---"));
+      snprintf(buff, sizeof(buff), "%d mA", CURRENT);
+      snprintf(buff3, sizeof(buff3), "Current: %s", (sensorbytesvalid ? buff : "---"));
+      snprintf(buff, sizeof(buff), "%d°C", TEMP);
+      snprintf(buff4, sizeof(buff4), "Temperature: %s", (sensorbytesvalid ? buff : "---"));
+      screen.displayMsg(buff1, buff2, buff3, buff4);
+      break;
+    case 3:
+      snprintf(buff1, sizeof(buff1), "Firmware v%s", FIRMWARE_VERSION);
+      snprintf(buff3, sizeof(buff3), "  %s", COMPILE_DATE);
+      screen.displayMsg(buff1, "Compiled:", buff3, "(c) 2021 foorschtbar");
+      break;
+    }
+  }
 }
 
 void setup(void)
@@ -1693,8 +1682,8 @@ void setup(void)
   Serial.swap();
 
   // Display
-  displaySetup();
-  displayMsg("Booting. Please wait...");
+  screen.setup();
+  screen.displayMsgForce("Booting. Please wait...");
 
   // Load Config
   loadConfig();
@@ -1713,14 +1702,14 @@ void setup(void)
     //Serial.println("configIsDefault: AP Mode");
     WiFi.softAP("RoombaESP", "");
     digitalWrite(PIN_LED_WIFI, HIGH);
-    displayMsg("WiFi: AP Mode");
+    screen.displayMsgForce("WiFi: AP Mode");
     delay(500);
     char buff1[255];
     char buff2[255];
     snprintf(buff1, sizeof(buff1), "SSID: %s", WiFi.softAPSSID().c_str());
     snprintf(buff2, sizeof(buff2), "IP: %s", WiFi.softAPIP().toString().c_str());
 
-    displayMsg("No valid config found.", "Started WiFi AP.", buff1, "PSK: none", buff2);
+    screen.displayMsgForce("No valid config found.", "Started WiFi AP.", buff1, "PSK: none", buff2);
   }
   else
   {
@@ -1735,19 +1724,19 @@ void setup(void)
 
     while (WiFi.status() != WL_CONNECTED)
     {
-      delay(250);
+      delay(200);
       //Serial.print(".");
 
       // Blink WiFi LED
       if (wifiledState == HIGH)
       {
         wifiledState = LOW;
-        displayMsg("WiFi connecting");
+        screen.displayMsgForce("WiFi connecting");
       }
       else
       {
         wifiledState = HIGH;
-        displayMsg("WiFi connecting...");
+        screen.displayMsgForce("WiFi connecting...");
       }
       digitalWrite(PIN_LED_WIFI, wifiledState);
 
@@ -1761,6 +1750,8 @@ void setup(void)
     digitalWrite(PIN_LED_WIFI, LOW);
 
     //WiFi.printDiag(Serial);
+
+    screen.showScreen(1);
   }
 
   // Telnet debug
@@ -1813,11 +1804,8 @@ void loop(void)
   server.handleClient();
 
   // Display
-  if (millis() - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL)
-  {
-    handleDisplay();
-    lastDisplayUpdate = millis();
-  }
+  screen.loop();
+  handleDisplay();
 
   // handle if we have a wifi connection (to wifi station)
   if (WiFi.status() == WL_CONNECTED)
