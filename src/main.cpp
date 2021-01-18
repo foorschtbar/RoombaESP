@@ -23,8 +23,10 @@
 Serial (Swap) 
 http://arduino.esp8266.com/Arduino/versions/2.1.0-rc2/doc/reference.html#serial
  
+https://dirtypcbs.com/store/designer/details/8372/892/roomba-4-zip
 
- https://dirtypcbs.com/store/designer/details/8372/892/roomba-4-zip
+u8g2reference
+https://github.com/olikraus/u8g2/wiki/u8g2reference
 */
 
 // ++++++++++++++++++++++++++++++++++++++++
