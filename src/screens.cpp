@@ -59,18 +59,30 @@ void Screens::loop()
 
 bool Screens::needRefresh()
 {
-    bool tmp = _needRefresh;
-    _needRefresh = false;
-    return tmp;
+    if (_modalMessageActive) // prevent update in loop if model Message is active
+    {
+        return false;
+    }
+    else
+    {
+        bool tmp = _needRefresh;
+        _needRefresh = false;
+        return tmp;
+    }
 }
 
 void Screens::nextScreen()
 {
-    _currentScreen += 1;
-    if (_currentScreen > _numofscreens)
+    if (!_displayPowerSaving) // dont switch screen, if last display was in power saving mode
+    {
+        _currentScreen += 1;
+    }
+
+    if (_currentScreen > _numofscreens || _currentScreen == 0)
     {
         _currentScreen = 1;
     }
+    _modalMessageActive = false;
     _needRefresh = true;
     powerSave(false);
     _lastScreenActivation = millis();
@@ -82,6 +94,7 @@ void Screens::showScreen(int screenNumber)
     {
         _currentScreen = screenNumber;
         _needRefresh = true;
+        _modalMessageActive = false;
         powerSave(false);
         _lastScreenActivation = millis();
     }
@@ -94,7 +107,7 @@ void Screens::powerSave(bool activatePowerSave, bool force /* = false */)
     {
         _u8g2.setPowerSave(1);
         _displayPowerSaving = true;
-        _currentScreen = 0;
+        _modalMessageActive = false;
     }
     else if (!activatePowerSave && (_displayPowerSaving || force)) // request to deactivate power save and display is power saving mode
     {
@@ -114,11 +127,18 @@ void Screens::displayMsg(const char *text, const char *text2 /* = "" */, const c
 
     _u8g2.clearBuffer();                 // clear the internal memory
     _u8g2.setFont(u8g2_font_helvB08_tf); // choose a suitable font
-    snprintf(_buff, sizeof(_buff), "RoombaESP", "");
+    snprintf(_buff, sizeof(_buff), "%s (%i/%i)", "RoombaESP         ", _currentScreen, _numofscreens);
     //u8g2_uint_t width = _u8g2.getUTF8Width(_buff);
     //u8g2_uint_t offset = (_u8g2.getDisplayWidth() - width) / 2;
     //_u8g2.drawStr(offset, 2, _buff);     // write something to the internal memory
-    _u8g2.drawStr(0, 2, _buff);
+    if (_modalMessageActive)
+    {
+        _u8g2.drawStr(0, 2, "RoombaESP");
+    }
+    else
+    {
+        _u8g2.drawStr(0, 2, _buff);
+    }
     _u8g2.setFont(u8g2_font_helvR08_tf); // choose a suitable font
     _u8g2.drawStr(0, 15, text);          // write something to the internal memory
     _u8g2.drawStr(0, 25, text2);         // write something to the internal memory
@@ -130,6 +150,7 @@ void Screens::displayMsg(const char *text, const char *text2 /* = "" */, const c
 
 void Screens::displayMsgForce(const char *text, const char *text2 /* = "" */, const char *text3 /* = "" */, const char *text4 /* = "" */, const char *text5 /* = "" */)
 {
+    _modalMessageActive = true;
     powerSave(false);
     _lastScreenActivation = millis();
     displayMsg(text, text2, text3, text4, text5);

@@ -41,7 +41,7 @@ https://github.com/olikraus/u8g2/wiki/u8g2reference
 #define PIN_BUTTON D3
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "1.8";
+const char FIRMWARE_VERSION[] = "1.9";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // Constants - Sensor
@@ -66,14 +66,14 @@ const int DISPLAY_UPDATE_INTERVAL = 200;
 const int DISPLAY_TIMEOUT = 4000; // time after display will go offs
 
 // Constants - MQTT
-const char MQTT_SUBSCRIBE_CMD_TOPIC1[] = "%scmd";                // Subscribe patter without hostname
+const char MQTT_SUBSCRIBE_CMD_TOPIC1[] = "%s/cmd";               // Subscribe patter without hostname
 const char MQTT_SUBSCRIBE_CMD_TOPIC2[] = "%s%s/cmd";             // Subscribe patter with hostname
 const char MQTT_PUBLISH_STATUS_TOPIC[] = "%s%s/status";          // Public pattern for status (normal and LWT) with hostname
 const char MQTT_LWT_MESSAGE[] = "{\"device\":\"disconnected\"}"; // LWT message
 const char MQTT_DEFAULT_PREFIX[] = "roombaesp";                  // Default MQTT topic prefix
 
 // Constants - Screen (OLED)
-const int SCREEN_COUNT = 3; // number of screens
+const int SCREEN_COUNT = 5; // number of screens
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -382,7 +382,7 @@ unsigned int getSensorStatus(bool force = false)
   }
   else
   {
-    rdebugA("Use cached sensor values (next refresh in %lus)\n", (INTERVAL_SENSOR_STATUS - lastSensorStatusDiff) / 1000);
+    rdebugA("Use cached sensor values (next refresh in %lums)\n", ((INTERVAL_SENSOR_STATUS - lastSensorStatusDiff)));
   }
 
   return 0;
@@ -508,10 +508,9 @@ String getStatusTriggerString(StatusTrigger statusTrigger)
 
 void MQTTpublishStatus(StatusTrigger statusTrigger)
 {
+  char jsonpretty[255];
   showWEBMQTTAction(false);
-  //Serial.println(F("-----------------------"));
-  //Serial.print(F("Publish MQTT status message\n"));
-  //Serial.print(F("State: "));
+  rdebugA("Publish MQTT status message\n");
   uint16_t mqtt_buffersize = client.getBufferSize();
 
   char payload[mqtt_buffersize];
@@ -526,13 +525,12 @@ void MQTTpublishStatus(StatusTrigger statusTrigger)
   jsondoc["wifi_rssi"] = WiFi.RSSI();
 
   size_t payloadSize = serializeJson(jsondoc, payload, sizeof(payload));
+  serializeJsonPretty(jsondoc, jsonpretty, sizeof(jsonpretty));
 
-  snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, mqtt_prefix, WiFi.hostname().c_str());
+  snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, mqtt_prefix, cfg.mqtt_prefix);
 
-  //Serial.printf_P(PSTR("Payload-/Buffersize: %i/%i bytes (%i%%)\n"), payloadSize, mqtt_buffersize, (int)((100.00 / (double)mqtt_buffersize) * payloadSize));
-  //Serial.printf_P(PSTR("Topic: %s\nMessage: "), buff);
-  //serializeJsonPretty(jsondoc, Serial);
-  //Serial.println();
+  rdebugA("Payload-/Buffersize: %i/%i bytes (%i%%)\n", payloadSize, mqtt_buffersize, (int)((100.00 / (double)mqtt_buffersize) * payloadSize));
+  rdebugA("Topic: %s\nMessage: %s\n", buff, jsonpretty);
 
   if (!client.publish(buff, (uint8_t *)payload, (unsigned int)payloadSize, true))
   {
@@ -586,7 +584,6 @@ void loadDefaults()
 
 void loadConfig()
 {
-  //Serial.println("loadConfig!");
   EEPROM.begin(512);
   EEPROM.get(cfgStart, cfg);
   EEPROM.end();
@@ -601,30 +598,6 @@ void loadConfig()
   }
 }
 
-void updateSensors(byte packet)
-{
-  // Serial.print(142);
-  // Serial.print(packet);
-  // delay(100); // wait for sensors
-  // char i = 0;
-  //
-  // while(Serial.available()) {
-  //   int c = Serial.read();
-  //   if( c==-1 ) {
-  //      rdebugA("Sensor Errror! %i\n", c);
-  //   }
-  //   sensorbytes[i++] = c;
-  // }
-  //
-  // rdebugA("VOLTAGE: %s\n", VOLTAGE);
-  // rdebugA("VOLTAGE: %i\n", VOLTAGE);
-  // rdebugA("VOLTAGE: %c\n", VOLTAGE);
-  //
-  // if(i < 6) {     // Size of smallest sensor packet is 6
-  //   rdebugA("Sensor Errrrrror! %i\n", i);
-  // }
-}
-
 String chargeStateString()
 {
   if (sensorbytesvalid)
@@ -635,19 +608,19 @@ String chargeStateString()
       return "Not charging";
       break;
     case 1:
-      return "Reconditioning Charging";
+      return "Reconditioning";
       break;
     case 2:
-      return "Full Charging";
+      return "Full";
       break;
     case 3:
-      return "Trickle Charging";
+      return "Trickle";
       break;
     case 4:
-      return "Charing Waiting";
+      return "Waiting";
       break;
     case 5:
-      return "Charging Fault Condition";
+      return "Fault Condition";
       break;
     }
   }
@@ -801,6 +774,17 @@ void HTMLFooter()
   html += "</html>\n";
 }
 
+String getUptime()
+{
+  char timebuff[20];
+  int sec = millis() / 1000;
+  int min = sec / 60;
+  int hr = min / 60;
+  int days = hr / 24;
+  snprintf(timebuff, sizeof(timebuff), " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
+  return timebuff;
+}
+
 void handleRoot()
 {
   showWEBMQTTAction();
@@ -808,16 +792,8 @@ void handleRoot()
   HTMLHeader("Main");
 
   html += "<table>\n";
-
-  char timebuf[20];
-  int sec = millis() / 1000;
-  int min = sec / 60;
-  int hr = min / 60;
-  int days = hr / 24;
-  snprintf(timebuf, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
-
   html += "<tr>\n<td>Uptime</td>\n<td>";
-  html += timebuf;
+  html += getUptime();
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Current Time</td>\n<td>";
@@ -854,7 +830,7 @@ void handleRoot()
   html += (sensorbytesvalid ? (isRoombaCharging() ? "YES" : "NO") : "---");
   html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>Charge State</td>\n<td>";
+  html += "<tr>\n<td>Charging State</td>\n<td>";
   html += (sensorbytesvalid ? chargeStateString() : "---");
   html += "</td>\n</tr>\n";
 
@@ -873,7 +849,7 @@ void handleRoot()
   html += (sensorbytesvalid ? buff : "---");
   html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>Charge level</td>\n<td>";
+  html += "<tr>\n<td>Charging level</td>\n<td>";
   if (sensorbytesvalid && CAPACITY > 0 && CHARGE > 0)
   {
     snprintf(buff, sizeof(buff), "%.2f%%", (100 / (float)CAPACITY) * CHARGE);
@@ -885,7 +861,7 @@ void handleRoot()
   }
   html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>Accu capacity</td>\n<td>";
+  html += "<tr>\n<td>Battery capacity</td>\n<td>";
   if (sensorbytesvalid)
   {
     html += CHARGE;
@@ -1508,13 +1484,14 @@ void onDisconnected(const WiFiEventStationModeDisconnected &evt)
 
 void MQTTprocessCommand(JsonObject &json)
 {
-  //Serial.println(F("Processing incomming MQTT command"));
+  rdebugA("incomming MQTT command\n");
 
   // Power on/off
   if (json.containsKey("clean"))
   {
     if (json["clean"].as<boolean>())
     {
+      screen.displayMsgForce("Start cleaning!");
       roombaCmd(RoombaCMDs::RMB_CLEAN, StatusTrigger::MQTT);
       timeClient.getFormattedDate().toCharArray(lastClean, sizeof(lastClean) / sizeof(*lastClean));
     }
@@ -1522,6 +1499,7 @@ void MQTTprocessCommand(JsonObject &json)
     {
       if (isRoombaCleaning())
       {
+        screen.displayMsgForce("Cleaning stopped!");
         roombaCmd(RoombaCMDs::RMB_CLEAN); // Stop cleaning
       }
     }
@@ -1531,6 +1509,7 @@ void MQTTprocessCommand(JsonObject &json)
   {
     if (json["dock"].as<boolean>())
     {
+      screen.displayMsgForce("Searching dock!");
       if (isRoombaCleaning())
       {
         roombaCmd(RoombaCMDs::RMB_CLEAN); // Stop cleaning
@@ -1555,11 +1534,9 @@ void MQTTprocessCommand(JsonObject &json)
 void MQTTcallback(char *topic, byte *payload, unsigned int length)
 {
   showWEBMQTTAction();
-  //Serial.println(F("Neq MQTT message (MQTTcallback)"));
-  //Serial.print(F("> Lenght: "));
-  //Serial.println(length);
-  //Serial.print(F("> Topic: "));
-  //Serial.println(topic);
+  rdebugA("Get MQTT message (MQTTcallback)\n");
+  rdebugA("> Lenght: %ui", length);
+  rdebugA("> Topic: %s\n", topic);
 
   if (length)
   {
@@ -1567,15 +1544,12 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
     DeserializationError err = deserializeJson(jsondoc, payload);
     if (err)
     {
-      //Serial.print(F("deserializeJson() failed: "));
-      //Serial.println(err.c_str());
+      rdebugA("deserializeJson() failed: %s", err.c_str());
     }
     else
     {
-
-      //Serial.print(F("> JSON: "));
-      serializeJsonPretty(jsondoc, Serial);
-      //Serial.println();
+      serializeJsonPretty(jsondoc, buff, sizeof(buff));
+      rdebugA("> JSON: %s\n", buff);
 
       JsonObject object = jsondoc.as<JsonObject>();
       MQTTprocessCommand(object);
@@ -1586,10 +1560,10 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
 boolean MQTTreconnect()
 {
 
-  //Serial.printf_P(PSTR("Connecting to MQTT Broker \"%s:%i\"..."), cfg.mqtt_server, cfg.mqtt_port);
+  rdebugA("Connecting to MQTT Broker \"%s:%i\"...", cfg.mqtt_server, cfg.mqtt_port);
   if (strcmp(cfg.mqtt_server, "") == 0)
   {
-    //Serial.println(F("failed. No server configured."));
+    rdebugA("failed. No server configured.\n");
     return false;
   }
   else
@@ -1599,25 +1573,24 @@ boolean MQTTreconnect()
     client.setCallback(MQTTcallback);
 
     //last will and testament topic
-    snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, mqtt_prefix, WiFi.hostname().c_str());
+    snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, cfg.mqtt_prefix, WiFi.hostname().c_str());
 
     if (client.connect(WiFi.hostname().c_str(), cfg.mqtt_user, cfg.mqtt_password, buff, 0, 1, MQTT_LWT_MESSAGE))
     {
-      //Serial.println(F("connected!"));
+      rdebugA("connected!\n");
 
-      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC1, mqtt_prefix);
+      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC1, cfg.mqtt_prefix);
       client.subscribe(buff);
-      //Serial.printf_P(PSTR("Subscribed to topic %s\n"), buff);
+      rdebugA("Subscribed to topic %s\n", buff);
 
-      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC2, mqtt_prefix, WiFi.hostname().c_str());
+      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC2, cfg.mqtt_prefix, WiFi.hostname().c_str());
       client.subscribe(buff);
-      //Serial.printf_P(PSTR("Subscribed to topic %s\n"), buff);
+      rdebugA("Subscribed to topic %s\n", buff);
       return true;
     }
     else
     {
-      //Serial.print(F("failed with state "));
-      //Serial.println(client.state());
+      rdebugA("failed with state: %i\n", client.state());
       return false;
     }
   }
@@ -1638,22 +1611,46 @@ void handleDisplay()
     case 1:
       //showWEBMQTTAction
       snprintf(buff1, sizeof(buff1), "%s", timeClient.getFormattedDate().c_str());
-      snprintf(buff2, sizeof(buff2), "Wifi %s", (WiFi.isConnected() ? "connected" : "not connected"));
+      snprintf(buff2, sizeof(buff2), "Wifi %s (%ld%%)", (WiFi.isConnected() ? "connected" : "not connected"), RSSI2Quality(WiFi.RSSI()));
       snprintf(buff3, sizeof(buff3), "IP: %s", (WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "---"));
       snprintf(buff4, sizeof(buff4), "MQTT %s", (client.connected() ? "connected" : "not connected"));
       screen.displayMsg(buff1, buff2, buff3, buff4);
       break;
+
     case 2:
-      snprintf(buff1, sizeof(buff1), "State: %s", (sensorbytesvalid ? chargeStateString().c_str() : "---"));
+      snprintf(buff1, sizeof(buff1), "Charging: %s", (sensorbytesvalid ? chargeStateString().c_str() : "---"));
+
       snprintf(buff, sizeof(buff), "%.2f V", ((float)VOLTAGE / 1000));
-      snprintf(buff2, sizeof(buff2), "Voltage: %s", (sensorbytesvalid ? buff : "---"));
+      snprintf(buff2, sizeof(buff2), "Voltage: %s ", (sensorbytesvalid ? buff : "---"));
+
       snprintf(buff, sizeof(buff), "%d mA", CURRENT);
       snprintf(buff3, sizeof(buff3), "Current: %s", (sensorbytesvalid ? buff : "---"));
-      snprintf(buff, sizeof(buff), "%d°C", TEMP);
+
+      snprintf(buff, sizeof(buff), "%d C", TEMP);
       snprintf(buff4, sizeof(buff4), "Temperature: %s", (sensorbytesvalid ? buff : "---"));
       screen.displayMsg(buff1, buff2, buff3, buff4);
       break;
+
     case 3:
+      snprintf(buff, sizeof(buff), "%.2f%%", (100 / (float)CAPACITY) * CHARGE);
+      snprintf(buff1, sizeof(buff1), "Charging level: %s", (sensorbytesvalid ? buff : "---"));
+
+      snprintf(buff2, sizeof(buff2), "Battery capacity: %s ", (sensorbytesvalid ? buff : "---"));
+
+      snprintf(buff, sizeof(buff), "%d/%d mA", CHARGE, CAPACITY);
+      snprintf(buff3, sizeof(buff3), "  %s", (sensorbytesvalid ? buff : "---"));
+
+      screen.displayMsg(buff1, "Battery capacity:", buff3);
+      break;
+
+    case 4:
+      snprintf(buff2, sizeof(buff2), "  %s", lastClean);
+      snprintf(buff3, sizeof(buff3), "Telnet: %s", (cfg.telnet == 1 ? "On" : "Off"));
+      snprintf(buff4, sizeof(buff4), "Uptime: %s", getUptime().c_str());
+      screen.displayMsg("Last clean:", buff2, buff3, buff4);
+      break;
+
+    case 5:
       snprintf(buff1, sizeof(buff1), "Firmware v%s", FIRMWARE_VERSION);
       snprintf(buff3, sizeof(buff3), "  %s", COMPILE_DATE);
       screen.displayMsg(buff1, "Compiled:", buff3, "(c) 2021 foorschtbar");
@@ -1701,7 +1698,7 @@ void setup(void)
   if (configIsDefault)
   {
     // Start AP
-    //Serial.println("configIsDefault: AP Mode");
+
     WiFi.softAP("RoombaESP", "");
     digitalWrite(PIN_LED_WIFI, HIGH);
     screen.displayMsgForce("WiFi: AP Mode");
@@ -1716,7 +1713,6 @@ void setup(void)
   else
   {
     // Connecting to a WiFi network
-    //Serial.println("configIsNotDefault: Connecting to WiFi");
     WiFi.mode(WIFI_STA);
     if (strcmp(cfg.hostname, "") != 0)
     {
@@ -1727,7 +1723,6 @@ void setup(void)
     while (WiFi.status() != WL_CONNECTED)
     {
       delay(200);
-      //Serial.print(".");
 
       // Blink WiFi LED
       if (wifiledState == HIGH)
@@ -1746,12 +1741,7 @@ void setup(void)
       handleButton();
     }
 
-    //Serial.println();
-    //Serial.print("WiFi connected with ip ");
-    //Serial.println(WiFi.localIP());
     digitalWrite(PIN_LED_WIFI, LOW);
-
-    //WiFi.printDiag(Serial);
 
     screen.showScreen(1);
   }

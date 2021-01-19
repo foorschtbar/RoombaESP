@@ -29,6 +29,7 @@ private:
     bool _displayPowerSaving;
     char _buff[255];
     bool _needRefresh;
+    bool _modalMessageActive = false;
 
     unsigned long _lastScreenUpdate;
     unsigned long _lastScreenActivation;
