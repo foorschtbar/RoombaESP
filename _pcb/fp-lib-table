@@ -1,3 +1,2 @@
 (fp_lib_table
-  (lib (name HW-613)(type KiCad)(uri ${KIPRJMOD}/HW-613.pretty)(options "")(descr ""))
 )
