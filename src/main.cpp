@@ -1,7 +1,3 @@
-/* BOARD SETTINGS
-  Board : NodeMCU 1.0
-*/
-
 // Remote debug over telnet - not recommended for production, only for development
 #include <RemoteDebug.h> //https://github.com/JoaoLopesF/RemoteDebug
 #include <NTPClient.h>
@@ -13,8 +9,25 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPUpdateServer.h>
 #include <EEPROM.h>
-#include <FS.h>
+#include <U8g2lib.h>
+#include <Wire.h>
 #include <settings.h> // Include my type definitions (must be in a separate file!)
+#include "screens.h"
+
+// ++++++++++++++++++++++++++++++++++++++++
+//
+// DOCU
+//
+// ++++++++++++++++++++++++++++++++++++++++
+/*
+Serial (Swap) 
+http://arduino.esp8266.com/Arduino/versions/2.1.0-rc2/doc/reference.html#serial
+ 
+https://dirtypcbs.com/store/designer/details/8372/892/roomba-4-zip
+
+u8g2reference
+https://github.com/olikraus/u8g2/wiki/u8g2reference
+*/
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -24,19 +37,18 @@
 
 // Constants - HW pins
 #define PIN_LED_WIFI D2 // Blue/Wifi LED (LED_BUILTIN=Nodemcu, D2 extern, D4=ESP-Chip-LED)
-//#define PIN_LED_NODEMCU LED_BUILTIN
 #define PIN_BRC D1
 #define PIN_BUTTON D3
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "1.7";
+const char FIRMWARE_VERSION[] = "1.9";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
-const char *logFileName = "log.txt";
 
 // Constants - Sensor
 #define SENSORBYTES_LENGHT 10
 unsigned long lastSensorStatusTime = 0;
 char sensorbytes[SENSORBYTES_LENGHT];
+boolean sensorbytesvalid = false;
 #define CHARGE_STATE (int)(sensorbytes[0])
 #define VOLTAGE (int)((sensorbytes[1] << 8) + sensorbytes[2])
 #define CURRENT (signed short int)((sensorbytes[3] << 8) + sensorbytes[4])
@@ -50,13 +62,18 @@ const int TIME_BUTTON_LONGPRESS = 10000;
 const long INTERVAL_SENSOR_STATUS = 1000;
 const int STATE_PUBLISH_INTERVAL = 5000;
 const int MQTT_RECONNECT_INTERVAL = 2000;
+const int DISPLAY_UPDATE_INTERVAL = 200;
+const int DISPLAY_TIMEOUT = 4000; // time after display will go offs
 
 // Constants - MQTT
-const char MQTT_SUBSCRIBE_CMD_TOPIC1[] = "%scmd";                // Subscribe patter without hostname
+const char MQTT_SUBSCRIBE_CMD_TOPIC1[] = "%s/cmd";               // Subscribe patter without hostname
 const char MQTT_SUBSCRIBE_CMD_TOPIC2[] = "%s%s/cmd";             // Subscribe patter with hostname
 const char MQTT_PUBLISH_STATUS_TOPIC[] = "%s%s/status";          // Public pattern for status (normal and LWT) with hostname
 const char MQTT_LWT_MESSAGE[] = "{\"device\":\"disconnected\"}"; // LWT message
 const char MQTT_DEFAULT_PREFIX[] = "roombaesp";                  // Default MQTT topic prefix
+
+// Constants - Screen (OLED)
+const int SCREEN_COUNT = 5; // number of screens
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -99,6 +116,8 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
 WiFiClient espClient;
 PubSubClient client(espClient);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/D6, /* data=*/D5); // pin remapping with ESP8266 HW I2C
+Screens screen(u8g2, SCREEN_COUNT, DISPLAY_UPDATE_INTERVAL, DISPLAY_TIMEOUT);
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -118,9 +137,13 @@ unsigned long lastLEDTime = 0;              // will store last time LED was upda
 unsigned long lastButtonTimer = 0;          // will store how long button was pressed
 unsigned long mqttLastReconnectAttempt = 0; // will store last time reconnect to mqtt broker
 unsigned long nextPublishTime = 0;          // will store last publish time
+unsigned long lastDisplayUpdate = 0;        // will store last display update
 char mqtt_prefix[50];                       // prefix fpr mqtt topic
 bool previousButtonState = 1;               // will store last Button state. 1 = unpressed, 0 = pressed
 bool bIsConnected = false;
+bool bMQTTsending = false;
+int currentScreen = 0;
+bool displayPowerSaving = true;
 
 // buffers
 String html;
@@ -154,23 +177,6 @@ void clearSerialBuffer()
   }
 }
 
-void logWrite(const char *text)
-{
-  /*
-  File logFile = SPIFFS.open(logFileName, "a+");
-  if (!logFile) {
-    //rdebugA("Opening file for write failed%s", "\n");
-  } else {
-    logFile.print(timeClient.getFormattedDate());
-    logFile.print('\t');
-    logFile.println(text);
-    logFile.close();
-  }
-  */
-  // Send to telnet debug
-  //rdebugA("%s\n", text);
-}
-
 void saveConfig()
 {
   EEPROM.begin(512);
@@ -199,13 +205,14 @@ void handleButton()
   {
     if (inp != previousButtonState)
     {
-      //rdebugA("Button pressed short\n");
+      rdebugA("Button pressed short\n");
       //ESP.reset();
       lastButtonTimer = millis();
+      screen.nextScreen();
     }
     if ((millis() - lastButtonTimer >= TIME_BUTTON_LONGPRESS))
     {
-      //rdebugA("Button pressed long\n");
+      debugA("Button pressed long\n");
       eraseConfig();
       ESP.reset();
     }
@@ -222,7 +229,7 @@ void roombaCmd(RoombaCMDs cmd, StatusTrigger statusTrigger = StatusTrigger::NONE
   switch (cmd)
   {
   case RoombaCMDs::RMB_WAKE:
-    logWrite("Send command RMB_WAKE to Roomba");
+    rdebugA("%s\n", "Send RMB_WAKE to RMB");
     digitalWrite(PIN_BRC, HIGH);
     delay(50);
     digitalWrite(PIN_BRC, LOW);
@@ -234,56 +241,56 @@ void roombaCmd(RoombaCMDs cmd, StatusTrigger statusTrigger = StatusTrigger::NONE
     break;
 
   case RoombaCMDs::RMB_START:
-    logWrite("Send command RMB_START to Roomba");
+    rdebugA("%s\n", "Send RMB_START to RMB");
     Serial.write(128); // Start
     delay(50);
     break;
 
   case RoombaCMDs::RMB_STOP:
     roombaCmd(RoombaCMDs::RMB_WAKE);
-    logWrite("Send command RMB_STOP to Roomba");
+    rdebugA("%s\n", "Send RMB_STOP to RMB");
     Serial.write(173); // Stop
     break;
 
   case RoombaCMDs::RMB_CLEAN:
     roombaCmd(RoombaCMDs::RMB_WAKE);
     roombaCmd(RoombaCMDs::RMB_START);
-    logWrite("Send command RMB_CLEAN to Roomba");
+    rdebugA("%s\n", "Send RMB_CLEAN to RMB");
     Serial.write(135); // Clean
     break;
 
   case RoombaCMDs::RMB_MAX:
     roombaCmd(RoombaCMDs::RMB_WAKE);
     roombaCmd(RoombaCMDs::RMB_START);
-    logWrite("Send command RMB_MAX to Roomba");
+    rdebugA("%s\n", "Send RMB_MAX to RMB");
     Serial.write(136); // Max
     break;
 
   case RoombaCMDs::RMB_SPOT:
     roombaCmd(RoombaCMDs::RMB_WAKE);
     roombaCmd(RoombaCMDs::RMB_START);
-    logWrite("Send command RMB_SPOT to Roomba");
+    rdebugA("%s\n", "Send RMB_SPOT to RMB");
     Serial.write(134); // Spot
     break;
 
   case RoombaCMDs::RMB_DOCK:
     roombaCmd(RoombaCMDs::RMB_WAKE);
     roombaCmd(RoombaCMDs::RMB_START);
-    logWrite("Send command RMB_DOCK to Roomba");
+    rdebugA("%s\n", "Send RMB_DOCK to RMB");
     Serial.write(143); // Seek Dock
     break;
 
   case RoombaCMDs::RMB_POWER:
     roombaCmd(RoombaCMDs::RMB_WAKE);
     roombaCmd(RoombaCMDs::RMB_START);
-    logWrite("Send command RMB_POWER to Roomba");
+    rdebugA("%s\n", "Send RMB_POWER to RMB");
     Serial.write(133); // powers down Roomba
     break;
 
   case RoombaCMDs::RMB_RESET:
     roombaCmd(RoombaCMDs::RMB_WAKE);
     roombaCmd(RoombaCMDs::RMB_START);
-    logWrite("Send command RMB_POWER to Roomba");
+    rdebugA("%s\n", "Send RMB_POWER to RMB");
     Serial.write(7); // resets down Roomba
     break;
   }
@@ -306,10 +313,10 @@ void showWEBMQTTAction(bool isWebAction = true)
     snprintf(buff, sizeof(buff), "%s %s %s ", server.client().remoteIP().toString().c_str(), (server.method() == HTTP_GET ? "GET" : "POST"), server.uri().c_str());
 
     // Log Access to telnet
-    //rdebugA("%s\n", buff);
+    rdebugA("%s\n", buff);
 
     // Log Access to Logfile
-    logWrite(buff);
+    rdebugA("%s\n", buff);
   }
 }
 
@@ -319,7 +326,7 @@ unsigned int getSensorStatus(bool force = false)
 
   if (force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS || lastSensorStatusTime == 0)
   {
-    //rdebugA("Get new sensor values\n");
+    rdebugA("Get new sensor values\n");
     uint8_t i = 0;
     int8_t availabled = 0;
 
@@ -335,7 +342,7 @@ unsigned int getSensorStatus(bool force = false)
     delay(50);
 
     availabled = Serial.available();
-    //rdebugA("Bytes to read: %i\n", availabled);
+    rdebugA("Bytes to read: %i\n", availabled);
 
     yield();
 
@@ -352,28 +359,30 @@ unsigned int getSensorStatus(bool force = false)
       }
 
       lastSensorStatusTime = millis();
-      //rdebugA("Successful read sensor status\n");
+      rdebugA("Successful read sensor status\n");
+      sensorbytesvalid = true;
     }
     else
     {
       clearSerialBuffer();
-      //rdebugA("Error read sensor status. To less or many bytes. Exspecting %d\n", SENSORBYTES_LENGHT);
+      rdebugA("Error read sensor status. To less or many bytes. Expecting %d\n", SENSORBYTES_LENGHT);
+      sensorbytesvalid = false;
     }
 
     yield();
 
     /*
-    //rdebugA("CHARGE_STATE: %i\n", CHARGE_STATE);
-    //rdebugA("VOLTAGE: %i\n", VOLTAGE);
-    //rdebugA("CURRENT: %i\n", CURRENT);
-    //rdebugA("TEMP: %i\n", TEMP);
-    //rdebugA("CHARGE: %i\n", CHARGE);
-    //rdebugA("CAPACITY: %i\n", CAPACITY);*/
+    rdebugA("CHARGE_STATE: %i\n", CHARGE_STATE);
+    rdebugA("VOLTAGE: %i\n", VOLTAGE);
+    rdebugA("CURRENT: %i\n", CURRENT);
+    rdebugA("TEMP: %i\n", TEMP);
+    rdebugA("CHARGE: %i\n", CHARGE);
+    rdebugA("CAPACITY: %i\n", CAPACITY);*/
     return availabled;
   }
   else
   {
-    //rdebugA("Use cached sensor values (next refresh in %lus)\n", (INTERVAL_SENSOR_STATUS - lastSensorStatusDiff) / 1000);
+    rdebugA("Use cached sensor values (next refresh in %lums)\n", ((INTERVAL_SENSOR_STATUS - lastSensorStatusDiff)));
   }
 
   return 0;
@@ -400,20 +409,20 @@ bool getRoombaSensorPacket(int PacketID, int &result)
 
   if (Serial.available() > 0)
   {
-    //rdebugA("Bytes to read: %i\n", Serial.available());
+    rdebugA("Bytes to read: %i\n", Serial.available());
     if (Serial.available() == 1)
     {
       sint8_t value = Serial.read();
-      //rdebugA("Serial.read: %i\n", value);
-      //rdebugA("Serial.read: %i\n", (signed int)value);
-      //rdebugA("Serial.read: %i\n", (unsigned int)value);
-      //rdebugA("Serial.read: %x\n", value);
-      //rdebugA("Serial.read: %i\n", value);
-      //rdebugA("Serial.read: %u\n", value);
-      //rdebugA("Serial.read: %i\n", (signed int)value);
-      //rdebugA("Serial.read: %u\n", (unsigned int)value);
-      //rdebugA("Serial.read: %u\n", (signed int)value);
-      //rdebugA("Serial.read: %u\n", (unsigned int)value);
+      rdebugA("Serial.read: %i\n", value);
+      rdebugA("Serial.read: %i\n", (signed int)value);
+      rdebugA("Serial.read: %i\n", (unsigned int)value);
+      rdebugA("Serial.read: %x\n", value);
+      rdebugA("Serial.read: %i\n", value);
+      rdebugA("Serial.read: %u\n", value);
+      rdebugA("Serial.read: %i\n", (signed int)value);
+      rdebugA("Serial.read: %u\n", (unsigned int)value);
+      rdebugA("Serial.read: %u\n", (signed int)value);
+      rdebugA("Serial.read: %u\n", (unsigned int)value);
       result = value;
       return true;
     }
@@ -421,10 +430,10 @@ bool getRoombaSensorPacket(int PacketID, int &result)
     {
       high = Serial.read();
       low = Serial.read();
-      //rdebugA("Serial.read: %i (%i, %i)\n", (high * 256 + low), high, low);
-      //rdebugA("Serial.read: %i, %i\n", lowByte(high * 256 + low), highByte(high * 256 + low));
-      //rdebugA("Serial.read: %i\n", (signed int)(low + (high << 8)));
-      //rdebugA("Serial.read: %i\n", (unsigned int)(low + (high << 8)));
+      rdebugA("Serial.read: %i (%i, %i)\n", (high * 256 + low), high, low);
+      rdebugA("Serial.read: %i, %i\n", lowByte(high * 256 + low), highByte(high * 256 + low));
+      rdebugA("Serial.read: %i\n", (signed int)(low + (high << 8)));
+      rdebugA("Serial.read: %i\n", (unsigned int)(low + (high << 8)));
       result = (high * 256 + low);
       return true;
     }
@@ -432,13 +441,13 @@ bool getRoombaSensorPacket(int PacketID, int &result)
     {
       while (Serial.available())
       {
-        //rdebugA("%i\n", Serial.read());
+        rdebugA("%i\n", Serial.read());
       }
     }
   }
   else
   {
-    //rdebugA("Es gibt nichts zu lesen! %s\n", "");
+    rdebugA("Es gibt nichts zu lesen! %s\n", "");
     return false;
   }
 
@@ -448,7 +457,7 @@ bool getRoombaSensorPacket(int PacketID, int &result)
 bool isRoombaCleaning()
 {
   getSensorStatus();
-  if (CHARGE_STATE == 1 || CHARGE_STATE == 2 || CHARGE_STATE == 3 || CHARGE_STATE == 5)
+  if (CHARGE_STATE == 1 || CHARGE_STATE == 2 || CHARGE_STATE == 3 || CHARGE_STATE == 5 || !sensorbytesvalid)
   {
     return false;
   }
@@ -468,7 +477,7 @@ bool isRoombaCleaning()
 bool isRoombaCharging()
 {
   getSensorStatus();
-  if (CHARGE_STATE == 1 || CHARGE_STATE == 2 || CHARGE_STATE == 3 || CHARGE_STATE == 5)
+  if (sensorbytesvalid && (CHARGE_STATE == 1 || CHARGE_STATE == 2 || CHARGE_STATE == 3 || CHARGE_STATE == 5))
   {
     return true;
   }
@@ -492,17 +501,16 @@ String getStatusTriggerString(StatusTrigger statusTrigger)
     return "none";
     break;
   default:
-    return "unkown";
+    return "unknown";
     break;
   }
 }
 
 void MQTTpublishStatus(StatusTrigger statusTrigger)
 {
+  char jsonpretty[255];
   showWEBMQTTAction(false);
-  //Serial.println(F("-----------------------"));
-  //Serial.print(F("Publish MQTT status message\n"));
-  //Serial.print(F("State: "));
+  rdebugA("Publish MQTT status message\n");
   uint16_t mqtt_buffersize = client.getBufferSize();
 
   char payload[mqtt_buffersize];
@@ -517,17 +525,16 @@ void MQTTpublishStatus(StatusTrigger statusTrigger)
   jsondoc["wifi_rssi"] = WiFi.RSSI();
 
   size_t payloadSize = serializeJson(jsondoc, payload, sizeof(payload));
+  serializeJsonPretty(jsondoc, jsonpretty, sizeof(jsonpretty));
 
-  snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, mqtt_prefix, WiFi.hostname().c_str());
+  snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, mqtt_prefix, cfg.mqtt_prefix);
 
-  //Serial.printf_P(PSTR("Payload-/Buffersize: %i/%i bytes (%i%%)\n"), payloadSize, mqtt_buffersize, (int)((100.00 / (double)mqtt_buffersize) * payloadSize));
-  //Serial.printf_P(PSTR("Topic: %s\nMessage: "), buff);
-  serializeJsonPretty(jsondoc, Serial);
-  //Serial.println();
+  rdebugA("Payload-/Buffersize: %i/%i bytes (%i%%)\n", payloadSize, mqtt_buffersize, (int)((100.00 / (double)mqtt_buffersize) * payloadSize));
+  rdebugA("Topic: %s\nMessage: %s\n", buff, jsonpretty);
 
   if (!client.publish(buff, (uint8_t *)payload, (unsigned int)payloadSize, true))
   {
-    ////rdebugAln("Failed to publish message!");
+    rdebugAln("Failed to publish message!");
   }
 
   nextPublishTime = millis() + (cfg.mqtt_periodic_update_interval * 1000);
@@ -577,7 +584,6 @@ void loadDefaults()
 
 void loadConfig()
 {
-  //Serial.println("loadConfig!");
   EEPROM.begin(512);
   EEPROM.get(cfgStart, cfg);
   EEPROM.end();
@@ -592,28 +598,34 @@ void loadConfig()
   }
 }
 
-void updateSensors(byte packet)
+String chargeStateString()
 {
-  // Serial.print(142);
-  // Serial.print(packet);
-  // delay(100); // wait for sensors
-  // char i = 0;
-  //
-  // while(Serial.available()) {
-  //   int c = Serial.read();
-  //   if( c==-1 ) {
-  //      //rdebugA("Sensor Errror! %i\n", c);
-  //   }
-  //   sensorbytes[i++] = c;
-  // }
-  //
-  // //rdebugA("VOLTAGE: %s\n", VOLTAGE);
-  // //rdebugA("VOLTAGE: %i\n", VOLTAGE);
-  // //rdebugA("VOLTAGE: %c\n", VOLTAGE);
-  //
-  // if(i < 6) {     // Size of smallest sensor packet is 6
-  //   //rdebugA("Sensor Errrrrror! %i\n", i);
-  // }
+  if (sensorbytesvalid)
+  {
+    switch (CHARGE_STATE)
+    {
+    case 0:
+      return "Not charging";
+      break;
+    case 1:
+      return "Reconditioning";
+      break;
+    case 2:
+      return "Full";
+      break;
+    case 3:
+      return "Trickle";
+      break;
+    case 4:
+      return "Waiting";
+      break;
+    case 5:
+      return "Fault Condition";
+      break;
+    }
+  }
+
+  return "Charging Unknown";
 }
 
 void HTMLHeader(const char *section, unsigned int refresh, const char *url)
@@ -743,7 +755,6 @@ void HTMLHeader(const char *section, unsigned int refresh, const char *url)
   html += "<li><a href='/actions'>Actions</a></li>\n";
   html += "<li><a href='/status'>Status</a></li>\n";
   html += "<li><a href='/settings'>Settings</a></li>\n";
-  html += "<li><a href='/logs'>Logs</a></li>\n";
   html += "<li><a href='/wifiscan'>WiFi Scan</a></li>\n";
   html += "<li><a href='/fwupdate'>FW Update</a></li>\n";
   html += "<li><a href='/reboot'>Reboot </a></li>\n";
@@ -763,6 +774,17 @@ void HTMLFooter()
   html += "</html>\n";
 }
 
+String getUptime()
+{
+  char timebuff[20];
+  int sec = millis() / 1000;
+  int min = sec / 60;
+  int hr = min / 60;
+  int days = hr / 24;
+  snprintf(timebuff, sizeof(timebuff), " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
+  return timebuff;
+}
+
 void handleRoot()
 {
   showWEBMQTTAction();
@@ -770,16 +792,8 @@ void handleRoot()
   HTMLHeader("Main");
 
   html += "<table>\n";
-
-  char timebuf[20];
-  int sec = millis() / 1000;
-  int min = sec / 60;
-  int hr = min / 60;
-  int days = hr / 24;
-  snprintf(timebuf, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
-
   html += "<tr>\n<td>Uptime</td>\n<td>";
-  html += timebuf;
+  html += getUptime();
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Current Time</td>\n<td>";
@@ -794,7 +808,7 @@ void handleRoot()
   html += COMPILE_DATE;
   html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>MQTT state:</td>\n<td>";
+  html += "<tr>\n<td>MQTT State:</td>\n<td>";
   if (client.connected())
   {
     html += "Connected";
@@ -805,7 +819,7 @@ void handleRoot()
   }
   html += "</td>\n</tr>\n";
   html += "<tr>\n<td>Cleaning State</td>\n<td>";
-  html += (isRoombaCleaning() ? "ON" : "OFF");
+  html += (sensorbytesvalid ? (isRoombaCleaning() ? "ON" : "OFF") : "---");
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Last clean</td>\n<td>";
@@ -813,70 +827,53 @@ void handleRoot()
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Dock</td>\n<td>";
-  if (isRoombaCharging())
-  {
-    html += "YES";
-  }
-  else
-  {
-    html += "NO";
-  }
+  html += (sensorbytesvalid ? (isRoombaCharging() ? "YES" : "NO") : "---");
   html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>Charge State</td>\n<td>";
-  switch (CHARGE_STATE)
-  {
-  case 0:
-    html += "Not charging";
-    break;
-  case 1:
-    html += "Reconditioning Charging";
-    break;
-  case 2:
-    html += "Full Charging";
-    break;
-  case 3:
-    html += "Trickle Charging";
-    break;
-  case 4:
-    html += "Waiting";
-    break;
-  case 5:
-    html += "Charging Fault Condition";
-    break;
-  }
+  html += "<tr>\n<td>Charging State</td>\n<td>";
+  html += (sensorbytesvalid ? chargeStateString() : "---");
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Voltage</td>\n<td>";
-  snprintf(buff, sizeof(buff), "%.2f", ((float)VOLTAGE / 1000));
-  html += buff;
-  html += "V</td>\n</tr>\n";
+  snprintf(buff, sizeof(buff), "%.2f V", ((float)VOLTAGE / 1000));
+  html += (sensorbytesvalid ? buff : "---");
+  html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Current</td>\n<td>";
-  html += CURRENT;
-  html += "mA</td>\n</tr>\n";
+  snprintf(buff, sizeof(buff), "%d mA", CURRENT);
+  html += (sensorbytesvalid ? buff : "---");
+  html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Temperature</td>\n<td>";
-  html += TEMP;
-  html += "&deg;C</td>\n</tr>\n";
+  snprintf(buff, sizeof(buff), "%d&deg;C", TEMP);
+  html += (sensorbytesvalid ? buff : "---");
+  html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>Charge level</td>\n<td>";
-  if (CAPACITY > 0 && CHARGE > 0)
+  html += "<tr>\n<td>Charging level</td>\n<td>";
+  if (sensorbytesvalid && CAPACITY > 0 && CHARGE > 0)
   {
-    snprintf(buff, sizeof(buff), "%.2f", (100 / (float)CAPACITY) * CHARGE);
+    snprintf(buff, sizeof(buff), "%.2f%%", (100 / (float)CAPACITY) * CHARGE);
     html += buff;
   }
   else
   {
-    html += "?";
+    html += "---";
   }
-  html += "%</td>\n</tr>\n";
+  html += "</td>\n</tr>\n";
 
-  html += "<tr>\n<td>Accu capacity</td>\n<td>";
-  html += CHARGE;
-  html += "mA of ";
-  html += CAPACITY;
-  html += "mA</td>\n</tr>\n";
+  html += "<tr>\n<td>Battery capacity</td>\n<td>";
+  if (sensorbytesvalid)
+  {
+    html += CHARGE;
+    html += "/";
+    html += CAPACITY;
+    html += " mA";
+  }
+  else
+  {
+    html += "---";
+  }
+  html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Note</td>\n<td>";
   if (strcmp(cfg.note, "") == 0)
@@ -925,91 +922,10 @@ void handleRoot()
   html += Debug.isActive(Debug.ANY);
   html += ")</td>\n</tr>\n";
 
-  // Filesystem
-  FSInfo fs_info;
-  SPIFFS.info(fs_info);
-  html += "<tr>\n<td>Speicherplatz</td>\n<td>";
-  html += (fs_info.totalBytes / 1000);
-  html += " kByte</td>\n</tr>\n";
-  html += "<tr>\n<td>Benutzt</td>\n<td>";
-  html += (fs_info.usedBytes / 1000);
-  html += " kByte (";
-  html += (100 / fs_info.totalBytes) * fs_info.usedBytes;
-  html += "%)</td>\n</tr>\n";
-  /*html += "<tr>\n<td>pageSize</td>\n<td>";
-    html += fs_info.pageSize;
-    html += "</td>\n</tr>\n";
-    html += "<tr>\n<td>maxOpenFiles</td>\n<td>";
-    html += fs_info.maxOpenFiles;
-    html += "</td>\n</tr>\n";
-    html += "<tr>\n<td>maxPathLength</td>\n<td>";
-    html += fs_info.maxPathLength;
-    html += "</td>\n</tr>\n";*/
-
   html += "</table>\n";
 
   HTMLFooter();
   server.send(200, "text/html", html);
-}
-
-void handleLogs()
-{
-  showWEBMQTTAction();
-  if (!server.authenticate(cfg.admin_username, cfg.admin_password))
-  {
-    return server.requestAuthentication();
-  }
-  else
-  {
-    if (server.method() == HTTP_POST)
-    {
-      for (uint8_t i = 0; i < server.args(); i++)
-      {
-        if (server.argName(i) == "delete")
-        {
-          SPIFFS.remove(logFileName);
-          logWrite("deleted logfile");
-        }
-        else if (server.argName(i) == "format")
-        {
-          SPIFFS.format();
-          logWrite("formated filesystem");
-        }
-      }
-    }
-
-    HTMLHeader("Logs");
-
-    html += "<form method='POST' action='/logs'>";
-
-    File logFile = SPIFFS.open(logFileName, "r");
-
-    if (!logFile)
-    {
-      html += "Oeffnen der Datei fehlgeschlagen";
-    }
-    else
-    {
-      html += "Logfile: ";
-      html += logFileName;
-      html += " (";
-      html += (logFile.size() / 1000);
-      html += " kByte)<br /><hr><pre>\n";
-      while (logFile.available())
-      {
-        html += char(logFile.read());
-      }
-      logFile.close();
-      html += "</pre>\n";
-    }
-
-    html += "<hr><input type='submit' name='delete' value='Delete Logfile'>";
-    html += " <input type='submit' name='format' value='Format FS' disabled>";
-    html += "</form>";
-
-    HTMLFooter();
-    server.send(200, "text/html", html);
-  }
 }
 
 void handleSettings()
@@ -1302,6 +1218,7 @@ void handleStatus()
     html += "<input type='text' name='singlesensorid' value=''>";
     html += "<input type='submit' name='singlesensor' value='Single Sensor'>";
     html += "<input type='submit' name='sensorgroup' value='Sensor Group 3'>";
+    html += "<input type='submit' name='readbuffer' value='Read Serial Buffer'>";
 
     if (server.method() == HTTP_POST)
     {
@@ -1342,7 +1259,7 @@ void handleStatus()
           packetID.trim();
           if (packetID != "")
           {
-            //rdebugA("PackedID: %s (%i)\n", packetID.c_str(), (int)packetID.toInt());
+            rdebugA("PackedID: %s (%i)\n", packetID.c_str(), (int)packetID.toInt());
             int result;
             if (getRoombaSensorPacket(packetID.toInt(), result))
             {
@@ -1353,6 +1270,17 @@ void handleStatus()
               html += "No data";
             }
           }
+        }
+        else if (server.argName(i) == "readbuffer")
+        {
+          html += "available: ";
+          html += Serial.available();
+          html += " <br /><pre>";
+          while (Serial.available())
+          {
+            html += Serial.read();
+          }
+          html += "</pre>";
         }
       }
     }
@@ -1541,7 +1469,7 @@ void handleNotFound()
 
 void onConnected(const WiFiEventStationModeConnected &evt)
 {
-  logWrite("WiFi connected");
+  rdebugA("%s\n", "WiFi connected");
   bIsConnected = true;
 }
 
@@ -1549,20 +1477,21 @@ void onDisconnected(const WiFiEventStationModeDisconnected &evt)
 {
   if (bIsConnected)
   { // First time disconnect
-    logWrite("WiFi disconnected");
+    rdebugA("%s\n", "WiFi disconnected");
     bIsConnected = false;
   }
 }
 
 void MQTTprocessCommand(JsonObject &json)
 {
-  //Serial.println(F("Processing incomming MQTT command"));
+  rdebugA("incomming MQTT command\n");
 
   // Power on/off
   if (json.containsKey("clean"))
   {
     if (json["clean"].as<boolean>())
     {
+      screen.displayMsgForce("Start cleaning!");
       roombaCmd(RoombaCMDs::RMB_CLEAN, StatusTrigger::MQTT);
       timeClient.getFormattedDate().toCharArray(lastClean, sizeof(lastClean) / sizeof(*lastClean));
     }
@@ -1570,6 +1499,7 @@ void MQTTprocessCommand(JsonObject &json)
     {
       if (isRoombaCleaning())
       {
+        screen.displayMsgForce("Cleaning stopped!");
         roombaCmd(RoombaCMDs::RMB_CLEAN); // Stop cleaning
       }
     }
@@ -1579,6 +1509,7 @@ void MQTTprocessCommand(JsonObject &json)
   {
     if (json["dock"].as<boolean>())
     {
+      screen.displayMsgForce("Searching dock!");
       if (isRoombaCleaning())
       {
         roombaCmd(RoombaCMDs::RMB_CLEAN); // Stop cleaning
@@ -1603,11 +1534,9 @@ void MQTTprocessCommand(JsonObject &json)
 void MQTTcallback(char *topic, byte *payload, unsigned int length)
 {
   showWEBMQTTAction();
-  //Serial.println(F("Neq MQTT message (MQTTcallback)"));
-  //Serial.print(F("> Lenght: "));
-  //Serial.println(length);
-  //Serial.print(F("> Topic: "));
-  //Serial.println(topic);
+  rdebugA("Get MQTT message (MQTTcallback)\n");
+  rdebugA("> Lenght: %ui", length);
+  rdebugA("> Topic: %s\n", topic);
 
   if (length)
   {
@@ -1615,15 +1544,12 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
     DeserializationError err = deserializeJson(jsondoc, payload);
     if (err)
     {
-      //Serial.print(F("deserializeJson() failed: "));
-      //Serial.println(err.c_str());
+      rdebugA("deserializeJson() failed: %s", err.c_str());
     }
     else
     {
-
-      //Serial.print(F("> JSON: "));
-      serializeJsonPretty(jsondoc, Serial);
-      //Serial.println();
+      serializeJsonPretty(jsondoc, buff, sizeof(buff));
+      rdebugA("> JSON: %s\n", buff);
 
       JsonObject object = jsondoc.as<JsonObject>();
       MQTTprocessCommand(object);
@@ -1634,10 +1560,10 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
 boolean MQTTreconnect()
 {
 
-  //Serial.printf_P(PSTR("Connecting to MQTT Broker \"%s:%i\"..."), cfg.mqtt_server, cfg.mqtt_port);
+  rdebugA("Connecting to MQTT Broker \"%s:%i\"...", cfg.mqtt_server, cfg.mqtt_port);
   if (strcmp(cfg.mqtt_server, "") == 0)
   {
-    //Serial.println(F("failed. No server configured."));
+    rdebugA("failed. No server configured.\n");
     return false;
   }
   else
@@ -1647,26 +1573,88 @@ boolean MQTTreconnect()
     client.setCallback(MQTTcallback);
 
     //last will and testament topic
-    snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, mqtt_prefix, WiFi.hostname().c_str());
+    snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, cfg.mqtt_prefix, WiFi.hostname().c_str());
 
     if (client.connect(WiFi.hostname().c_str(), cfg.mqtt_user, cfg.mqtt_password, buff, 0, 1, MQTT_LWT_MESSAGE))
     {
-      //Serial.println(F("connected!"));
+      rdebugA("connected!\n");
 
-      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC1, mqtt_prefix);
+      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC1, cfg.mqtt_prefix);
       client.subscribe(buff);
-      //Serial.printf_P(PSTR("Subscribed to topic %s\n"), buff);
+      rdebugA("Subscribed to topic %s\n", buff);
 
-      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC2, mqtt_prefix, WiFi.hostname().c_str());
+      snprintf(buff, sizeof(buff), MQTT_SUBSCRIBE_CMD_TOPIC2, cfg.mqtt_prefix, WiFi.hostname().c_str());
       client.subscribe(buff);
-      //Serial.printf_P(PSTR("Subscribed to topic %s\n"), buff);
+      rdebugA("Subscribed to topic %s\n", buff);
       return true;
     }
     else
     {
-      //Serial.print(F("failed with state "));
-      //Serial.println(client.state());
+      rdebugA("failed with state: %i\n", client.state());
       return false;
+    }
+  }
+}
+
+void handleDisplay()
+{
+  if (screen.needRefresh())
+  {
+
+    char buff1[255];
+    char buff2[255];
+    char buff3[255];
+    char buff4[255];
+
+    switch (screen.currentScreen())
+    {
+    case 1:
+      //showWEBMQTTAction
+      snprintf(buff1, sizeof(buff1), "%s", timeClient.getFormattedDate().c_str());
+      snprintf(buff2, sizeof(buff2), "Wifi %s (%ld%%)", (WiFi.isConnected() ? "connected" : "not connected"), RSSI2Quality(WiFi.RSSI()));
+      snprintf(buff3, sizeof(buff3), "IP: %s", (WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "---"));
+      snprintf(buff4, sizeof(buff4), "MQTT %s", (client.connected() ? "connected" : "not connected"));
+      screen.displayMsg(buff1, buff2, buff3, buff4);
+      break;
+
+    case 2:
+      snprintf(buff1, sizeof(buff1), "Charging: %s", (sensorbytesvalid ? chargeStateString().c_str() : "---"));
+
+      snprintf(buff, sizeof(buff), "%.2f V", ((float)VOLTAGE / 1000));
+      snprintf(buff2, sizeof(buff2), "Voltage: %s ", (sensorbytesvalid ? buff : "---"));
+
+      snprintf(buff, sizeof(buff), "%d mA", CURRENT);
+      snprintf(buff3, sizeof(buff3), "Current: %s", (sensorbytesvalid ? buff : "---"));
+
+      snprintf(buff, sizeof(buff), "%d C", TEMP);
+      snprintf(buff4, sizeof(buff4), "Temperature: %s", (sensorbytesvalid ? buff : "---"));
+      screen.displayMsg(buff1, buff2, buff3, buff4);
+      break;
+
+    case 3:
+      snprintf(buff, sizeof(buff), "%.2f%%", (100 / (float)CAPACITY) * CHARGE);
+      snprintf(buff1, sizeof(buff1), "Charging level: %s", (sensorbytesvalid ? buff : "---"));
+
+      snprintf(buff2, sizeof(buff2), "Battery capacity: %s ", (sensorbytesvalid ? buff : "---"));
+
+      snprintf(buff, sizeof(buff), "%d/%d mA", CHARGE, CAPACITY);
+      snprintf(buff3, sizeof(buff3), "  %s", (sensorbytesvalid ? buff : "---"));
+
+      screen.displayMsg(buff1, "Battery capacity:", buff3);
+      break;
+
+    case 4:
+      snprintf(buff2, sizeof(buff2), "  %s", lastClean);
+      snprintf(buff3, sizeof(buff3), "Telnet: %s", (cfg.telnet == 1 ? "On" : "Off"));
+      snprintf(buff4, sizeof(buff4), "Uptime: %s", getUptime().c_str());
+      screen.displayMsg("Last clean:", buff2, buff3, buff4);
+      break;
+
+    case 5:
+      snprintf(buff1, sizeof(buff1), "Firmware v%s", FIRMWARE_VERSION);
+      snprintf(buff3, sizeof(buff3), "  %s", COMPILE_DATE);
+      screen.displayMsg(buff1, "Compiled:", buff3, "(c) 2021 foorschtbar");
+      break;
     }
   }
 }
@@ -1677,7 +1665,6 @@ void setup(void)
   // Setting the I/O pin modes
   pinMode(PIN_BUTTON, INPUT);
   pinMode(PIN_LED_WIFI, OUTPUT);
-  //pinMode(PIN_LED_NODEMCU, OUTPUT);
   pinMode(PIN_BRC, OUTPUT);
 
   // WiFi Status LED on
@@ -1693,9 +1680,9 @@ void setup(void)
   Serial.begin(115200);
   Serial.swap();
 
-  // SPIFFS
-  SPIFFS.begin();
-  logWrite("- - - S T A R T - - -");
+  // Display
+  screen.setup();
+  screen.displayMsgForce("Booting. Please wait...");
 
   // Load Config
   loadConfig();
@@ -1711,14 +1698,21 @@ void setup(void)
   if (configIsDefault)
   {
     // Start AP
-    //Serial.println("configIsDefault: AP Mode");
-    WiFi.softAP("Roomba", "");
+
+    WiFi.softAP("RoombaESP", "");
     digitalWrite(PIN_LED_WIFI, HIGH);
+    screen.displayMsgForce("WiFi: AP Mode");
+    delay(500);
+    char buff1[255];
+    char buff2[255];
+    snprintf(buff1, sizeof(buff1), "SSID: %s", WiFi.softAPSSID().c_str());
+    snprintf(buff2, sizeof(buff2), "IP: %s", WiFi.softAPIP().toString().c_str());
+
+    screen.displayMsgForce("No valid config found.", "Started WiFi AP.", buff1, "PSK: none", buff2);
   }
   else
   {
     // Connecting to a WiFi network
-    //Serial.println("configIsNotDefault: Connecting to WiFi");
     WiFi.mode(WIFI_STA);
     if (strcmp(cfg.hostname, "") != 0)
     {
@@ -1728,17 +1722,18 @@ void setup(void)
 
     while (WiFi.status() != WL_CONNECTED)
     {
-      delay(250);
-      //Serial.print(".");
+      delay(200);
 
       // Blink WiFi LED
       if (wifiledState == HIGH)
       {
         wifiledState = LOW;
+        screen.displayMsgForce("WiFi connecting");
       }
       else
       {
         wifiledState = HIGH;
+        screen.displayMsgForce("WiFi connecting...");
       }
       digitalWrite(PIN_LED_WIFI, wifiledState);
 
@@ -1746,12 +1741,9 @@ void setup(void)
       handleButton();
     }
 
-    //Serial.println();
-    //Serial.print("WiFi connected with ip ");
-    //Serial.println(WiFi.localIP());
     digitalWrite(PIN_LED_WIFI, LOW);
 
-    //WiFi.printDiag(Serial);
+    screen.showScreen(1);
   }
 
   // Telnet debug
@@ -1777,16 +1769,15 @@ void setup(void)
   server.on("/status", handleStatus);
   server.on("/fwupdate", handleFWUpdate);
   server.on("/wifiscan", handleWiFiScan);
-  server.on("/logs", handleLogs);
   server.begin();
 
-  logWrite("HTTP server started");
+  rdebugA("%s\n", "HTTP server started");
 
   // Update NTPClient for the first time
   timeClient.update();
 
   // finish setup
-  logWrite("Setup function done");
+  rdebugA("%s\n", "Setup function done");
 }
 
 void loop(void)
@@ -1801,16 +1792,20 @@ void loop(void)
   // Button
   handleButton();
 
-  // handle if we have a wifi connection
+  // Webserver
+  server.handleClient();
+
+  // Display
+  screen.loop();
+  handleDisplay();
+
+  // handle if we have a wifi connection (to wifi station)
   if (WiFi.status() == WL_CONNECTED)
   {
-    // Webserver
-    server.handleClient();
-
     // Remote Debug
     if (cfg.telnet)
     {
-      //Debug.handle();
+      Debug.handle();
     }
 
     // NTPClient Update
