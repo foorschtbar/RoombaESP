@@ -153,6 +153,7 @@ char lastClean[50] = "---"; // will store last Clean
 // function prototype
 void HTMLHeader(const char *section, unsigned int refresh = 0, const char *url = "/");
 void MQTTpublishStatus(StatusTrigger statusTrigger);
+unsigned int getSensorStatus(bool force = false);
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -297,30 +298,13 @@ void roombaCmd(RoombaCMDs cmd, StatusTrigger statusTrigger = StatusTrigger::NONE
 
   if (statusTrigger != StatusTrigger::NONE)
   {
+    delay(2000); // delay status message directly after command
+    getSensorStatus(true);
     MQTTpublishStatus(statusTrigger);
   }
 }
 
-void showWEBMQTTAction(bool isWebAction = true)
-{
-  // Blink LED
-  digitalWrite(PIN_LED_WIFI, HIGH);
-  lastLEDTime = millis();
-
-  // Log Access to telnet
-  if (isWebAction)
-  {
-    snprintf(buff, sizeof(buff), "%s %s %s ", server.client().remoteIP().toString().c_str(), (server.method() == HTTP_GET ? "GET" : "POST"), server.uri().c_str());
-
-    // Log Access to telnet
-    rdebugA("%s\n", buff);
-
-    // Log Access to Logfile
-    rdebugA("%s\n", buff);
-  }
-}
-
-unsigned int getSensorStatus(bool force = false)
+unsigned int getSensorStatus(bool force)
 {
   ulong lastSensorStatusDiff = (millis() - lastSensorStatusTime);
 
@@ -386,6 +370,25 @@ unsigned int getSensorStatus(bool force = false)
   }
 
   return 0;
+}
+
+void showWEBMQTTAction(bool isWebAction = true)
+{
+  // Blink LED
+  digitalWrite(PIN_LED_WIFI, HIGH);
+  lastLEDTime = millis();
+
+  // Log Access to telnet
+  if (isWebAction)
+  {
+    snprintf(buff, sizeof(buff), "%s %s %s ", server.client().remoteIP().toString().c_str(), (server.method() == HTTP_GET ? "GET" : "POST"), server.uri().c_str());
+
+    // Log Access to telnet
+    rdebugA("%s\n", buff);
+
+    // Log Access to Logfile
+    rdebugA("%s\n", buff);
+  }
 }
 
 bool getRoombaSensorPacket(int PacketID, int &result)
@@ -463,7 +466,7 @@ bool isRoombaCleaning()
   }
   else
   {
-    if (CURRENT < -500)
+    if (CURRENT < -400)
     {
       return true;
     }
@@ -496,6 +499,9 @@ String getStatusTriggerString(StatusTrigger statusTrigger)
     break;
   case StatusTrigger::WEB:
     return "web";
+    break;
+  case StatusTrigger::MQTT:
+    return "mqtt";
     break;
   case StatusTrigger::NONE:
     return "none";
@@ -1538,7 +1544,7 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
   rdebugA("> Lenght: %ui", length);
   rdebugA("> Topic: %s\n", topic);
 
-  if (length)
+  if (length)s
   {
     StaticJsonDocument<256> jsondoc;
     DeserializationError err = deserializeJson(jsondoc, payload);
