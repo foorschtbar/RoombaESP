@@ -1544,23 +1544,24 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
   rdebugA("> Lenght: %ui", length);
   rdebugA("> Topic: %s\n", topic);
 
-  if (length)s
-  {
-    StaticJsonDocument<256> jsondoc;
-    DeserializationError err = deserializeJson(jsondoc, payload);
-    if (err)
+  if (length)
+    s
     {
-      rdebugA("deserializeJson() failed: %s", err.c_str());
-    }
-    else
-    {
-      serializeJsonPretty(jsondoc, buff, sizeof(buff));
-      rdebugA("> JSON: %s\n", buff);
+      StaticJsonDocument<256> jsondoc;
+      DeserializationError err = deserializeJson(jsondoc, payload);
+      if (err)
+      {
+        rdebugA("deserializeJson() failed: %s", err.c_str());
+      }
+      else
+      {
+        serializeJsonPretty(jsondoc, buff, sizeof(buff));
+        rdebugA("> JSON: %s\n", buff);
 
-      JsonObject object = jsondoc.as<JsonObject>();
-      MQTTprocessCommand(object);
+        JsonObject object = jsondoc.as<JsonObject>();
+        MQTTprocessCommand(object);
+      }
     }
-  }
 }
 
 boolean MQTTreconnect()
@@ -1746,6 +1747,7 @@ void setup(void)
       // handleButton
       handleButton();
     }
+    WiFi.setAutoReconnect(true);
 
     digitalWrite(PIN_LED_WIFI, LOW);
 
