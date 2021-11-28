@@ -41,7 +41,7 @@ https://github.com/olikraus/u8g2/wiki/u8g2reference
 #define PIN_BUTTON D3
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "1.9";
+const char FIRMWARE_VERSION[] = "1.9.1";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // Constants - Sensor
@@ -1545,23 +1545,22 @@ void MQTTcallback(char *topic, byte *payload, unsigned int length)
   rdebugA("> Topic: %s\n", topic);
 
   if (length)
-    s
+  {
+    StaticJsonDocument<256> jsondoc;
+    DeserializationError err = deserializeJson(jsondoc, payload);
+    if (err)
     {
-      StaticJsonDocument<256> jsondoc;
-      DeserializationError err = deserializeJson(jsondoc, payload);
-      if (err)
-      {
-        rdebugA("deserializeJson() failed: %s", err.c_str());
-      }
-      else
-      {
-        serializeJsonPretty(jsondoc, buff, sizeof(buff));
-        rdebugA("> JSON: %s\n", buff);
-
-        JsonObject object = jsondoc.as<JsonObject>();
-        MQTTprocessCommand(object);
-      }
+      rdebugA("deserializeJson() failed: %s", err.c_str());
     }
+    else
+    {
+      serializeJsonPretty(jsondoc, buff, sizeof(buff));
+      rdebugA("> JSON: %s\n", buff);
+
+      JsonObject object = jsondoc.as<JsonObject>();
+      MQTTprocessCommand(object);
+    }
+  }
 }
 
 boolean MQTTreconnect()
