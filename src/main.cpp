@@ -11,6 +11,8 @@
 #include <EEPROM.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <jled.h>
+#include <Ticker.h>
 #include <settings.h> // Include my type definitions (must be in a separate file!)
 #include "screens.h"
 
@@ -20,9 +22,9 @@
 //
 // ++++++++++++++++++++++++++++++++++++++++
 /*
-Serial (Swap) 
+Serial (Swap)
 http://arduino.esp8266.com/Arduino/versions/2.1.0-rc2/doc/reference.html#serial
- 
+
 https://dirtypcbs.com/store/designer/details/8372/892/roomba-4-zip
 
 u8g2reference
@@ -41,7 +43,7 @@ https://github.com/olikraus/u8g2/wiki/u8g2reference
 #define PIN_BUTTON D3
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "1.9.1";
+const char FIRMWARE_VERSION[] = "2.0";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // Constants - Sensor
@@ -57,7 +59,7 @@ boolean sensorbytesvalid = false;
 #define CAPACITY (int)((sensorbytes[8] << 8) + sensorbytes[9])
 
 // Constants - Intervals (all in ms)
-const int LED_WEB_MIN_TIME = 300; // interval at which to blink (milliseconds)
+const int LED_BLINK_DURATION = 50; // interval at which to blink (milliseconds)
 const int TIME_BUTTON_LONGPRESS = 10000;
 const long INTERVAL_SENSOR_STATUS = 1000;
 const int STATE_PUBLISH_INTERVAL = 5000;
@@ -118,6 +120,8 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/D6, /* data=*/D5); // pin remapping with ESP8266 HW I2C
 Screens screen(u8g2, SCREEN_COUNT, DISPLAY_UPDATE_INTERVAL, DISPLAY_TIMEOUT);
+Ticker ledTicker;
+auto led = JLed(PIN_LED_WIFI);
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -144,6 +148,7 @@ bool bIsConnected = false;
 bool bMQTTsending = false;
 int currentScreen = 0;
 bool displayPowerSaving = true;
+bool stopLEDupdate = false;
 
 // buffers
 String html;
@@ -207,7 +212,7 @@ void handleButton()
     if (inp != previousButtonState)
     {
       rdebugA("Button pressed short\n");
-      //ESP.reset();
+      // ESP.reset();
       lastButtonTimer = millis();
       screen.nextScreen();
     }
@@ -374,9 +379,13 @@ unsigned int getSensorStatus(bool force)
 
 void showWEBMQTTAction(bool isWebAction = true)
 {
-  // Blink LED
-  digitalWrite(PIN_LED_WIFI, HIGH);
-  lastLEDTime = millis();
+  // Turn of LED for a few milliseconds if access is from web or mqtt message is published
+  stopLEDupdate = true;
+  digitalWrite(PIN_LED_WIFI, LOW);
+  ledTicker.attach_ms(LED_BLINK_DURATION, []()
+                      { ledTicker.detach();
+    led.Update();
+    stopLEDupdate = false; });
 
   // Log Access to telnet
   if (isWebAction)
@@ -522,7 +531,7 @@ void MQTTpublishStatus(StatusTrigger statusTrigger)
   char payload[mqtt_buffersize];
   DynamicJsonDocument jsondoc(mqtt_buffersize);
 
-  //getSensorStatus(true);
+  // getSensorStatus(true);
   jsondoc["cleaning"] = isRoombaCleaning();
   jsondoc["charging"] = isRoombaCharging();
   jsondoc["trigger"] = getStatusTriggerString(statusTrigger);
@@ -750,7 +759,7 @@ void HTMLHeader(const char *section, unsigned int refresh, const char *url)
   html += "}\n";
 
   html += "</style>\n";
-  //html += "<link href=\"data:image/x-icon;base64,AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAQAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGgAAAAXAAAABAAAAAAAAAARAAAASQAAAEkAAAARAAAAAAAAAAQAAAAXAAAAZQAAAAAAAAAAAAAAAAAAAHwAAABgAAAAmRcXE0IrKCTQGRcL+zkyBP44MgT+FhMH+RwaFccQEAxAAAAAmQAAAF8AAAB6AAAAAAAAAFQAAABlAAAAlzIvLKR7d3H81dHJ/4eDcf9mXhv/ZV0a/4F8af+gloD/TUU27RwYE5QAAACXAAAAYgAAAFQAAABwAAAAlDg1L4yYlI3+3NjP/9zYz//V0cn/npyW/56clv/V0cn/3NjP/7atm/9fVkL3IBwUfgAAAJQAAABwAAAADAcDA01iX1r63NjP/9zYz/9xdon/GSxp/xc4pP8VNpv/IzBa/31+hP/c2M//qp+K/zw1KecDAABNAAAADAAAAAA0Myy5zMnA/9zYz/+WmaP/FTOT/yJX//8hVPX/IVT1/yBU+P8bMXr/paOi/9bSx/+Ed1z/GRgTogAAAAAAAAAAQD4459zYz//c2M//IjJl/yJW/f8WOab/ECh2/xAodv8XO63/G0rm/zY+Wf/c2M//pZqE/yQgGc4AAAAALy8pnGVjXPnc2M//3NjP/xYscP8iV///DiNn/yJX//8iV///Dydz/x1P8P8nNWL/3NjP/7SrmP8+OCvjFhQPilZSTfPc2M//3NjP/9zYz/8bMHD/Ilf//xApeP8aQcD/GUG//xAqev8cTev/MT1k/9zYz//W0sf/rqSQ/zMuI9pJRkDm29fO/8K/t//c2M//RlBy/x5N4/8hVPX/Fzuu/xc7rv8hU/T/FT/G/1lda//c2M//wr+3/7Oqlv8rJh7OLSsnuaGelP9HQA7/d3Ja/9LOxf8iL1v/HEfP/yJX//8iVv3/GD66/zU8U//SzsX/d3Ja/0dBDv93b1z/HRoUqgoKCjJtaWH5VlEu/3JnEv+VkYL/1tLJ/2dsgP8vPWj/QUhi/3V2fP/W0sn/lZGA/3FmEf9UTyz/SEEy6goKCjIAAAAAJSQesqCblP9VTiH/dWkO/2NfQv+yrqb/19PK/9fTyv+zr6b/ZF9C/3VpDf9TTiH/fHRi/hoXEqgAAAAAAAAAAAAAAAgpJyLPp6KY/15ZOf9uYxD/c2cL/2deGv9nXhr/c2cL/29jEf9fWjr/k4t8/h0ZFMQAAAAHAAAAAAAAAAAAAAAAAAAACCQgHbFmYVn2sK2k/3VxW/9lYED/ZWBA/3VxW/+xrKP/XllP8xoYEqoAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACgoKNCEeGLE6Ni/dSUQ960hFPOo7Ny/dHh0XsAoKCjQAAAAAAAAAAAAAAAAAAAAAxCMAAIABAAAAAAAAAAAAAAAAAACAAQAAgAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAEAAIABAADAAwAA8A8AAA==\" rel=\"icon\" type=\"image/x-icon\">";
+  // html += "<link href=\"data:image/x-icon;base64,AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAQAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGgAAAAXAAAABAAAAAAAAAARAAAASQAAAEkAAAARAAAAAAAAAAQAAAAXAAAAZQAAAAAAAAAAAAAAAAAAAHwAAABgAAAAmRcXE0IrKCTQGRcL+zkyBP44MgT+FhMH+RwaFccQEAxAAAAAmQAAAF8AAAB6AAAAAAAAAFQAAABlAAAAlzIvLKR7d3H81dHJ/4eDcf9mXhv/ZV0a/4F8af+gloD/TUU27RwYE5QAAACXAAAAYgAAAFQAAABwAAAAlDg1L4yYlI3+3NjP/9zYz//V0cn/npyW/56clv/V0cn/3NjP/7atm/9fVkL3IBwUfgAAAJQAAABwAAAADAcDA01iX1r63NjP/9zYz/9xdon/GSxp/xc4pP8VNpv/IzBa/31+hP/c2M//qp+K/zw1KecDAABNAAAADAAAAAA0Myy5zMnA/9zYz/+WmaP/FTOT/yJX//8hVPX/IVT1/yBU+P8bMXr/paOi/9bSx/+Ed1z/GRgTogAAAAAAAAAAQD4459zYz//c2M//IjJl/yJW/f8WOab/ECh2/xAodv8XO63/G0rm/zY+Wf/c2M//pZqE/yQgGc4AAAAALy8pnGVjXPnc2M//3NjP/xYscP8iV///DiNn/yJX//8iV///Dydz/x1P8P8nNWL/3NjP/7SrmP8+OCvjFhQPilZSTfPc2M//3NjP/9zYz/8bMHD/Ilf//xApeP8aQcD/GUG//xAqev8cTev/MT1k/9zYz//W0sf/rqSQ/zMuI9pJRkDm29fO/8K/t//c2M//RlBy/x5N4/8hVPX/Fzuu/xc7rv8hU/T/FT/G/1lda//c2M//wr+3/7Oqlv8rJh7OLSsnuaGelP9HQA7/d3Ja/9LOxf8iL1v/HEfP/yJX//8iVv3/GD66/zU8U//SzsX/d3Ja/0dBDv93b1z/HRoUqgoKCjJtaWH5VlEu/3JnEv+VkYL/1tLJ/2dsgP8vPWj/QUhi/3V2fP/W0sn/lZGA/3FmEf9UTyz/SEEy6goKCjIAAAAAJSQesqCblP9VTiH/dWkO/2NfQv+yrqb/19PK/9fTyv+zr6b/ZF9C/3VpDf9TTiH/fHRi/hoXEqgAAAAAAAAAAAAAAAgpJyLPp6KY/15ZOf9uYxD/c2cL/2deGv9nXhr/c2cL/29jEf9fWjr/k4t8/h0ZFMQAAAAHAAAAAAAAAAAAAAAAAAAACCQgHbFmYVn2sK2k/3VxW/9lYED/ZWBA/3VxW/+xrKP/XllP8xoYEqoAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACgoKNCEeGLE6Ni/dSUQ960hFPOo7Ny/dHh0XsAoKCjQAAAAAAAAAAAAAAAAAAAAAxCMAAIABAAAAAAAAAAAAAAAAAACAAQAAgAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAEAAIABAADAAwAA8A8AAA==\" rel=\"icon\" type=\"image/x-icon\">";
   html += "</head>\n";
   html += "<body>\n";
   html += "<h1>";
@@ -1578,7 +1587,7 @@ boolean MQTTreconnect()
     client.setServer(cfg.mqtt_server, cfg.mqtt_port);
     client.setCallback(MQTTcallback);
 
-    //last will and testament topic
+    // last will and testament topic
     snprintf(buff, sizeof(buff), MQTT_PUBLISH_STATUS_TOPIC, cfg.mqtt_prefix, WiFi.hostname().c_str());
 
     if (client.connect(WiFi.hostname().c_str(), cfg.mqtt_user, cfg.mqtt_password, buff, 0, 1, MQTT_LWT_MESSAGE))
@@ -1615,7 +1624,7 @@ void handleDisplay()
     switch (screen.currentScreen())
     {
     case 1:
-      //showWEBMQTTAction
+      // showWEBMQTTAction
       snprintf(buff1, sizeof(buff1), "%s", timeClient.getFormattedDate().c_str());
       snprintf(buff2, sizeof(buff2), "Wifi %s (%ld%%)", (WiFi.isConnected() ? "connected" : "not connected"), RSSI2Quality(WiFi.RSSI()));
       snprintf(buff3, sizeof(buff3), "IP: %s", (WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "---"));
@@ -1674,10 +1683,10 @@ void setup(void)
   pinMode(PIN_BRC, OUTPUT);
 
   // WiFi Status LED on
-  digitalWrite(PIN_LED_WIFI, HIGH);
+  digitalWrite(PIN_LED_WIFI, LOW);
 
   // NodeMCU LED on
-  //digitalWrite(PIN_LED_WIFI, LOW);
+  // digitalWrite(PIN_LED_WIFI, LOW);
 
   // Baudrate Change/Wake-Pin Low
   digitalWrite(PIN_BRC, LOW);
@@ -1751,14 +1760,17 @@ void setup(void)
     digitalWrite(PIN_LED_WIFI, LOW);
 
     screen.showScreen(1);
+
+    // Show fancy LED animation
+    led = JLed(PIN_LED_WIFI).Breathe(3000, 500, 3000).DelayAfter(500).MinBrightness(20).MaxBrightness(70).Forever();
   }
 
   // Telnet debug
   if (cfg.telnet)
   {
     Debug.begin(WiFi.hostname()); // Initiaze the telnet server
-    //Debug.setSerialEnabled(true);   // All messages too send to serial too, and can be see in serial monitor
-    //Debug.setResetCmdEnabled(true); // Enable the reset command
+    // Debug.setSerialEnabled(true);   // All messages too send to serial too, and can be see in serial monitor
+    // Debug.setResetCmdEnabled(true); // Enable the reset command
   }
 
   // NTPClient
@@ -1789,11 +1801,10 @@ void setup(void)
 
 void loop(void)
 {
-
-  //showWEBMQTTAction
-  if (millis() - lastLEDTime >= LED_WEB_MIN_TIME)
+  // LED
+  if (!stopLEDupdate)
   {
-    digitalWrite(PIN_LED_WIFI, LOW);
+    led.Update();
   }
 
   // Button
