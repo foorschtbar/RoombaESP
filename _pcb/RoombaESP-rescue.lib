@@ -1,0 +1,35 @@
+EESchema-LIBRARY Version 2.4
+#encoding utf-8
+#
+# +3.3V-power
+#
+DEF +3.3V-power #PWR 0 0 Y Y 1 F P
+F0 "#PWR" 0 -150 50 H I C CNN
+F1 "+3.3V-power" 0 140 50 H V C CNN
+F2 "" 0 0 50 H I C CNN
+F3 "" 0 0 50 H I C CNN
+DRAW
+P 2 0 1 0 -30 50 0 100 N
+P 2 0 1 0 0 0 0 100 N
+P 2 0 1 0 0 100 30 50 N
+X +3V3 1 0 0 0 U 50 50 1 1 W N
+ENDDRAW
+ENDDEF
+#
+# DD4012SA-Converter_DCDC_Mod
+#
+DEF DD4012SA-Converter_DCDC_Mod U 0 40 Y Y 1 F N
+F0 "U" 0 150 50 H V C CNN
+F1 "DD4012SA-Converter_DCDC_Mod" 0 -250 50 H V C CNN
+F2 "Converter_DCDC_Mod:DD4012SA" 0 -250 50 H V C CNN
+F3 "" 0 150 50 H I C CNN
+DRAW
+P 2 0 1 0 150 -350 150 -350 N
+S 150 100 -150 -200 0 1 0 f
+X V1 1 250 50 100 L 50 50 1 1 W
+X GND 2 250 -50 100 L 50 50 1 1 I
+X Vo 3 250 -150 100 L 50 50 1 1 w
+ENDDRAW
+ENDDEF
+#
+#End Library

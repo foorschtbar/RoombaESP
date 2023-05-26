@@ -1,2 +1,3 @@
 (sym_lib_table
+  (lib (name "RoombaESP-rescue")(type "Legacy")(uri "${KIPRJMOD}/RoombaESP-rescue.lib")(options "")(descr ""))
 )
