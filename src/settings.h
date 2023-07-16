@@ -28,6 +28,7 @@ typedef struct
   char mqtt_prefix[50];
   uint16_t mqtt_periodic_update_interval;
   uint8_t fancyled;
+  uint8_t led_brightness; // in percent
 } configData_t;
 
 #endif

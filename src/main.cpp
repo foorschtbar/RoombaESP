@@ -43,8 +43,9 @@ https://github.com/olikraus/u8g2/wiki/u8g2reference
 #define PIN_BUTTON D3
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "2.1";
+const char FIRMWARE_VERSION[] = "2.2";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
+const int PWMRANGE = 1023;
 
 // Constants - Sensor
 #define SENSORBYTES_LENGHT 10
@@ -150,6 +151,7 @@ bool bMQTTsending = false;
 int currentScreen = 0;
 bool displayPowerSaving = true;
 bool stopLEDupdate = false;
+int ledBrightness = PWMRANGE;
 
 // buffers
 String html;
@@ -394,7 +396,7 @@ void showWEBMQTTAction(bool isWebAction = true)
   }
   else
   {
-    digitalWrite(PIN_LED_WIFI, HIGH);
+    analogWrite(PIN_LED_WIFI, ledBrightness);
     lastLEDTime = millis();
   }
 
@@ -608,6 +610,7 @@ void loadDefaults()
   cfg.mqtt_periodic_update_interval = 10;
 
   cfg.fancyled = 0;
+  cfg.led_brightness = 50;
 }
 
 void loadConfig()
@@ -971,8 +974,9 @@ void handleSettings()
     if (server.method() == HTTP_POST)
     { // Save Settings
 
-      // Telnet - disable first and update only when on is in form data because its a checkbox
+      // Disable Checkboxes first and update only when on is in form data because its a checkbox
       cfg.telnet = 0;
+      cfg.fancyled = 0;
 
       for (uint8_t i = 0; i < server.args(); i++)
       {
@@ -1039,6 +1043,10 @@ void handleSettings()
         else if (server.argName(i) == "fancyled")
         {
           cfg.fancyled = 1;
+        } // LED Brightness
+        else if (server.argName(i) == "led_brightness")
+        {
+          cfg.led_brightness = value.toInt();
         }
         saveandreboot = true;
       }
@@ -1144,6 +1152,32 @@ void handleSettings()
       html += "<td><input type='checkbox' name='fancyled' ";
       html += (cfg.fancyled == 1 ? "checked" : "");
       html += "></td>\n</tr>\n";
+
+      html += "<tr>\n<td>LED brightness:</td>\n";
+      html += "<td><select name='led_brightness'>";
+      html += "<option value='5'";
+      html += (cfg.led_brightness == 5 ? " selected" : "");
+      html += ">5%</option>";
+      html += "<option value='10'";
+      html += (cfg.led_brightness == 10 ? " selected" : "");
+      html += ">10%</option>";
+      html += "<option value='15'";
+      html += (cfg.led_brightness == 15 ? " selected" : "");
+      html += ">15%</option>";
+      html += "<option value='25'";
+      html += (cfg.led_brightness == 25 ? " selected" : "");
+      html += ">25%</option>";
+      html += "<option value='50'";
+      html += (cfg.led_brightness == 50 ? " selected" : "");
+      html += ">50%</option>";
+      html += "<option value='75'";
+      html += (cfg.led_brightness == 75 ? " selected" : "");
+      html += ">75%</option>";
+      html += "<option value='100'";
+      html += (cfg.led_brightness == 100 ? " selected" : "");
+      html += ">100%</option>";
+      html += "</select>";
+      html += "</td>\n</tr>\n";
 
       html += "</table>\n";
 
@@ -1704,7 +1738,7 @@ void setup(void)
   pinMode(PIN_LED_WIFI, OUTPUT);
   pinMode(PIN_BRC, OUTPUT);
 
-  // WiFi Status LED on
+  // WiFi Status LED off
   digitalWrite(PIN_LED_WIFI, LOW);
 
   // NodeMCU LED on
@@ -1731,13 +1765,16 @@ void setup(void)
   mConnectHandler = WiFi.onStationModeConnected(&onConnected);
   mDisConnectHandler = WiFi.onStationModeDisconnected(&onDisconnected);
 
+  // LED brightness
+  ledBrightness = (PWMRANGE / 100.00) * cfg.led_brightness;
+
   // AP or Infrastructire mode
   if (configIsDefault)
   {
     // Start AP
 
     WiFi.softAP("RoombaESP", "");
-    digitalWrite(PIN_LED_WIFI, HIGH);
+    analogWrite(PIN_LED_WIFI, ledBrightness);
     screen.displayMsgForce("WiFi: AP Mode");
     delay(500);
     char buff1[255];
@@ -1766,20 +1803,21 @@ void setup(void)
       {
         wifiledState = LOW;
         screen.displayMsgForce("WiFi connecting");
+        analogWrite(PIN_LED_WIFI, 0);
       }
       else
       {
         wifiledState = HIGH;
         screen.displayMsgForce("WiFi connecting...");
+        analogWrite(PIN_LED_WIFI, ledBrightness);
       }
-      digitalWrite(PIN_LED_WIFI, wifiledState);
 
       // handleButton
       handleButton();
     }
     WiFi.setAutoReconnect(true);
 
-    digitalWrite(PIN_LED_WIFI, LOW);
+    analogWrite(PIN_LED_WIFI, 0);
 
     screen.showScreen(1);
 
@@ -1840,7 +1878,7 @@ void loop(void)
     // showWEBMQTTAction
     if (millis() - lastLEDTime >= LED_WEB_MIN_TIME)
     {
-      digitalWrite(PIN_LED_WIFI, LOW);
+      analogWrite(PIN_LED_WIFI, 0);
     }
   }
 
