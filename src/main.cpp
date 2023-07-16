@@ -43,7 +43,7 @@ https://github.com/olikraus/u8g2/wiki/u8g2reference
 #define PIN_BUTTON D3
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "2.0";
+const char FIRMWARE_VERSION[] = "2.1";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // Constants - Sensor
@@ -59,7 +59,8 @@ boolean sensorbytesvalid = false;
 #define CAPACITY (int)((sensorbytes[8] << 8) + sensorbytes[9])
 
 // Constants - Intervals (all in ms)
-const int LED_BLINK_DURATION = 50; // interval at which to blink (milliseconds)
+const int LED_FANCY_DURATION = 50; // interval at which to blink (milliseconds)
+const int LED_WEB_MIN_TIME = 300;  // interval at which to blink (milliseconds)
 const int TIME_BUTTON_LONGPRESS = 10000;
 const long INTERVAL_SENSOR_STATUS = 1000;
 const int STATE_PUBLISH_INTERVAL = 5000;
@@ -311,7 +312,7 @@ void roombaCmd(RoombaCMDs cmd, StatusTrigger statusTrigger = StatusTrigger::NONE
 
 unsigned int getSensorStatus(bool force)
 {
-  ulong lastSensorStatusDiff = (millis() - lastSensorStatusTime);
+  unsigned long lastSensorStatusDiff = (millis() - lastSensorStatusTime);
 
   if (force || lastSensorStatusDiff >= INTERVAL_SENSOR_STATUS || lastSensorStatusTime == 0)
   {
@@ -379,13 +380,23 @@ unsigned int getSensorStatus(bool force)
 
 void showWEBMQTTAction(bool isWebAction = true)
 {
-  // Turn of LED for a few milliseconds if access is from web or mqtt message is published
-  stopLEDupdate = true;
-  digitalWrite(PIN_LED_WIFI, LOW);
-  ledTicker.attach_ms(LED_BLINK_DURATION, []()
-                      { ledTicker.detach();
+
+  // Blink LED
+  if (cfg.fancyled == 1)
+  {
+    // Turn of LED for a few milliseconds if access is from web or mqtt message is published
+    stopLEDupdate = true;
+    digitalWrite(PIN_LED_WIFI, LOW);
+    ledTicker.attach_ms(LED_FANCY_DURATION, []()
+                        { ledTicker.detach();
     led.Update();
     stopLEDupdate = false; });
+  }
+  else
+  {
+    digitalWrite(PIN_LED_WIFI, HIGH);
+    lastLEDTime = millis();
+  }
 
   // Log Access to telnet
   if (isWebAction)
@@ -595,6 +606,8 @@ void loadDefaults()
   memcpy(cfg.mqtt_password, "", sizeof(cfg.mqtt_password) / sizeof(*cfg.mqtt_password));
   memcpy(cfg.mqtt_prefix, MQTT_DEFAULT_PREFIX, sizeof(cfg.mqtt_prefix) / sizeof(*cfg.mqtt_prefix));
   cfg.mqtt_periodic_update_interval = 10;
+
+  cfg.fancyled = 0;
 }
 
 void loadConfig()
@@ -1022,6 +1035,10 @@ void handleSettings()
         else if (server.argName(i) == "telnet")
         {
           cfg.telnet = 1;
+        } // Fancy LED
+        else if (server.argName(i) == "fancyled")
+        {
+          cfg.fancyled = 1;
         }
         saveandreboot = true;
       }
@@ -1121,6 +1138,11 @@ void handleSettings()
       html += "<tr>\n<td>\nEnable Telnet:</td>\n";
       html += "<td><input type='checkbox' name='telnet' ";
       html += (cfg.telnet ? "checked" : "");
+      html += "></td>\n</tr>\n";
+
+      html += "<tr>\n<td>\nEnable Fancy LED:</td>\n";
+      html += "<td><input type='checkbox' name='fancyled' ";
+      html += (cfg.fancyled == 1 ? "checked" : "");
       html += "></td>\n</tr>\n";
 
       html += "</table>\n";
@@ -1761,8 +1783,11 @@ void setup(void)
 
     screen.showScreen(1);
 
-    // Show fancy LED animation
-    led = JLed(PIN_LED_WIFI).Breathe(3000, 500, 3000).DelayAfter(500).MinBrightness(20).MaxBrightness(70).Forever();
+    if (cfg.fancyled == 1)
+    {
+      // Show fancy LED animation
+      led = JLed(PIN_LED_WIFI).Breathe(3000, 500, 3000).DelayAfter(500).MinBrightness(20).MaxBrightness(70).Forever();
+    }
   }
 
   // Telnet debug
@@ -1801,10 +1826,22 @@ void setup(void)
 
 void loop(void)
 {
-  // LED
-  if (!stopLEDupdate)
+  // Update LEDs
+  if (cfg.fancyled == 1)
   {
-    led.Update();
+    // LED
+    if (!stopLEDupdate)
+    {
+      led.Update();
+    }
+  }
+  else
+  {
+    // showWEBMQTTAction
+    if (millis() - lastLEDTime >= LED_WEB_MIN_TIME)
+    {
+      digitalWrite(PIN_LED_WIFI, LOW);
+    }
   }
 
   // Button

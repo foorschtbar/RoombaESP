@@ -27,6 +27,7 @@ typedef struct
   char mqtt_password[50];
   char mqtt_prefix[50];
   uint16_t mqtt_periodic_update_interval;
+  uint8_t fancyled;
 } configData_t;
 
 #endif
